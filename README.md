@@ -24,24 +24,6 @@ Configure the model using the following JSON template in your Viam robot configu
   "crop_width": <int>,
   "crop_height": <int>
 }
-
-### Configuration
-The following attribute template can be used to configure this model:
-
-```json
-{
-  "email": "<string>",
-  "password": "<string>",
-  "camera": "<string>",
-  "frequency": <int>,
-  "timeframe": [<int>, <int>],
-  "recipients": ["<string>", "<string>"],
-  "save_dir": "<string>",
-  "crop_top": <int>,
-  "crop_left": <int>,
-  "crop_width": <int>,
-  "crop_height": <int>
-}
 ```
 
 #### Attributes
