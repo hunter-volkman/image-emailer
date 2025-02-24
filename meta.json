@@ -1,0 +1,17 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "hunter:image-emailer",
+  "visibility": "private",
+  "url": "",
+  "description": "Modular sensor component: image-emailer\n A sensor module for capturing, cropping, and emailing images from a remote camera on a schedule",
+  "models": [
+    {
+      "api": "rdk:component:sensor",
+      "model": "hunter:sensor:image-emailer",
+      "short_description": "Captures hourly images from a remote camera, crops them to show shelves, and emails them",
+      "markdown_link": "README.md#model-huntersensorimage-emailer"
+    }
+  ],
+  "entrypoint": "./run.sh",
+  "first_run": ""
+}
