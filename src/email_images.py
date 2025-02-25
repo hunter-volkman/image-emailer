@@ -38,13 +38,10 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
-        mode = attributes.get("mode", "live")
-        if mode not in ["test", "live"]:
-            raise Exception("mode must be 'test' or 'live'")
         for time in attributes["schedule"]:
             if not (0 <= time <= 2359 and time % 100 < 60):
                 raise Exception(f"Schedule time {time} must be in HHMM format (0000-2359)")
-        send_time = attributes.get("send_time", 20)
+        send_time = attributes.get("send_time", 2000)
         if not (0 <= send_time <= 2359 and send_time % 100 < 60):
             raise Exception(f"send_time {send_time} must be in HHMM format (0000-2359)")
         return [attributes["camera"]]
@@ -54,7 +51,6 @@ class EmailImages(Sensor, EasyResource):
         self.email = ""
         self.password = ""
         self.schedule = []  # List of HHMM times
-        self.mode = "live"
         self.timeframe = [600, 2000]  # 6:00 AM to 8:00 PM EST in HHMM
         self.send_time = 2000         # 8:00 PM EST in HHMM
         self.camera = None
@@ -96,7 +92,6 @@ class EmailImages(Sensor, EasyResource):
         self.email = attributes["email"]
         self.password = attributes["password"]
         self.schedule = attributes["schedule"]
-        self.mode = attributes.get("mode", "live")
         self.timeframe = attributes.get("timeframe", [600, 2000])
         self.send_time = attributes.get("send_time", 2000)
         self.camera_name = attributes["camera"]
@@ -121,7 +116,7 @@ class EmailImages(Sensor, EasyResource):
         for dir_path in [self.base_dir, self.startup_dir]:
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path)
-        print(f"Reconfigured {self.name} with mode: {self.mode}, schedule: {self.schedule}, send_time: {self.send_time}")
+        print(f"Reconfigured {self.name} with schedule: {self.schedule}, send_time: {self.send_time}")
 
     async def get_readings(
         self,
@@ -154,17 +149,9 @@ class EmailImages(Sensor, EasyResource):
 
         # Regular captures
         if start_time <= current_hhmm < end_time:
-            should_capture = False
-            if self.mode == "test":
-                time_since_last = (now - self.last_capture_time).total_seconds() if self.last_capture_time else float('inf')
-                print(f"Test mode: Time since last capture: {time_since_last:.2f}s, interval: 60s")
-                should_capture = time_since_last >= 60
-            elif self.mode == "live":
-                current_time = now.hour * 100 + now.minute
-                print(f"Live mode: Current time: {current_time}, checking schedule {self.schedule}")
-                should_capture = current_time in self.schedule
-
-            if should_capture:
+            current_time = now.hour * 100 + now.minute
+            print(f"Current time: {current_time}, checking schedule {self.schedule}")
+            if current_time in self.schedule:
                 await self._capture_image(now, daily_dir, "hourly")
                 self._save_state()
 
@@ -204,8 +191,8 @@ class EmailImages(Sensor, EasyResource):
         print(f"Preparing report with {len(images)} hourly images")
         msg = MIMEMultipart()
         msg["From"] = self.email
-        msg["Subject"] = f"Daily Inventory Report - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(images)} inventory images captured on {timestamp.strftime('%Y-%m-%d')} EST."
+        msg["Subject"] = f"Daily Shelf Report - {timestamp.strftime('%Y-%m-%d')}"
+        body = f"Attached are {len(images)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST."
         msg.attach(MIMEText(body, "plain"))
 
         for image_file in images:
