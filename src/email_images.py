@@ -62,15 +62,19 @@ class EmailImages(Sensor, EasyResource):
         if not os.path.exists(daily_dir):
             print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
-        images = [f for f in os.listdir(daily_dir) if f.startswith("image_")]
+        images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
         if not images:
-            print(f"No images found in {daily_dir}, last_capture_time remains None")
+            print(f"No valid images found in {daily_dir}, last_capture_time remains None")
             return None
         latest = max(images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         timestamp_str = latest.split('_')[1] + "_" + latest.split('_')[2].split('.')[0]
-        last_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
-        print(f"Found latest image {latest}, setting last_capture_time to {last_time}")
-        return last_time
+        try:
+            last_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+            print(f"Found latest image {latest}, setting last_capture_time to {last_time}")
+            return last_time
+        except ValueError:
+            print(f"Invalid timestamp in {latest}, last_capture_time remains None")
+            return None
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         attributes = struct_to_dict(config.attributes)
@@ -160,32 +164,44 @@ class EmailImages(Sensor, EasyResource):
                 print(f"Error capturing image: {str(e)}")
                 return {"error": str(e)}
 
-        # Send report after capture to ensure latest image is included
+        # Send report after capture, catch errors separately
+        email_status = "not_sent"
         if current_hour == self.send_time and not self.sent_this_hour:
             print(f"Send time {self.send_time} matched, preparing report for {today}")
             try:
-                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}")]
+                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}") and f.endswith("_EST.jpg")]
                 images_by_hour = {}
                 for img in all_images:
-                    hour = int(img.split('_')[2][0:2])  # Extract HH from HHMMSS in filename
-                    if start_time <= hour < end_time:
-                        images_by_hour[hour] = img  # Latest per hour
+                    try:
+                        hour = int(img.split('_')[2][0:2])  # Extract HH from HHMMSS in filename
+                        if start_time <= hour < end_time:
+                            images_by_hour[hour] = img  # Latest per hour
+                    except (ValueError, IndexError):
+                        print(f"Skipping invalid filename: {img}")
+                        continue
                 
                 images_to_send = list(images_by_hour.values())
                 if images_to_send:
                     self.send_daily_report(images_to_send, now, daily_dir)
                     self.sent_this_hour = True
+                    email_status = "sent"
                     print(f"Sent report with {len(images_to_send)} images; originals preserved.")
-                    return {"email_sent": True}
                 else:
-                    print("No images to send for today within timeframe.")
+                    email_status = "no_images"
+                    print("No valid images to send for today within timeframe.")
             except Exception as e:
+                email_status = f"error: {str(e)}"
                 print(f"Error sending email: {str(e)}")
-                return {"error": str(e)}
+
         elif current_hour != self.send_time:
             self.sent_this_hour = False
 
-        return {"status": "running"}
+        # Return status even if email fails
+        return {
+            "status": "running",
+            "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
+            "email_status": email_status
+        }
 
     def send_daily_report(self, image_files, timestamp, daily_dir):
         msg = MIMEMultipart()
