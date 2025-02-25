@@ -180,12 +180,13 @@ class EmailImages(Sensor, EasyResource):
                         print(f"Skipping invalid filename: {img}")
                         continue
                 
-                images_to_send = list(images_by_hour.values())
+                # Sort images by full timestamp (earliest to latest)
+                images_to_send = sorted(images_by_hour.values(), key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
                 if images_to_send:
                     self.send_daily_report(images_to_send, now, daily_dir)
                     self.sent_this_hour = True
                     email_status = "sent"
-                    print(f"Sent report with {len(images_to_send)} images; originals preserved.")
+                    print(f"Sent report with {len(images_to_send)} images in chronological order; originals preserved.")
                 else:
                     email_status = "no_images"
                     print("No valid images to send for today within timeframe.")
@@ -207,10 +208,10 @@ class EmailImages(Sensor, EasyResource):
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Shelf Report - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST."
+        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST, ordered from earliest to latest."
         msg.attach(MIMEText(body, "plain"))
 
-        for image_file in image_files:
+        for image_file in image_files:  # Already sorted
             image_path = os.path.join(daily_dir, image_file)
             with open(image_path, "rb") as file:
                 attachment = MIMEBase("application", "octet-stream")
