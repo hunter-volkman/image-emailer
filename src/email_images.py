@@ -43,8 +43,8 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.timeframe = [7, 19]
-        self.send_time = 19
+        self.timeframe = [7, 20]  # 7 AM to 7 PM EST (inclusive)
+        self.send_time = 19       # 7 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
@@ -76,7 +76,7 @@ class EmailImages(Sensor, EasyResource):
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
-        self.timeframe = attributes.get("timeframe", [7, 19])
+        self.timeframe = attributes.get("timeframe", [7, 20])
         self.send_time = attributes.get("send_time", 19)
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
@@ -110,8 +110,7 @@ class EmailImages(Sensor, EasyResource):
         timeout: Optional[float] = None,
         **kwargs
     ) -> Mapping[str, SensorReading]:
-        # Local time is EST
-        now = datetime.datetime.now()  
+        now = datetime.datetime.now()  # Local time is EST
         current_hour = now.hour
         print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}, hour: {current_hour}")
         
@@ -132,11 +131,11 @@ class EmailImages(Sensor, EasyResource):
             next_hour = last_hour + 1 if last_hour < end_time - 1 else start_time
             print(f"Last capture time: {self.last_capture_time}, last_hour: {last_hour}, next_hour: {next_hour}")
         else:
-            # Start at first hour if no prior capture
-            next_hour = start_time  
+            next_hour = start_time  # Start at first hour if no prior capture
             print(f"No last capture time, setting next_hour to start_time: {next_hour}")
 
         # Capture if it's time for the next hour
+        captured = False
         if start_time <= current_hour < end_time and current_hour >= next_hour:
             try:
                 print("Attempting to get image from camera")
@@ -155,22 +154,22 @@ class EmailImages(Sensor, EasyResource):
                 save_path = os.path.join(daily_dir, filename)
                 cropped_img.save(save_path, format="JPEG")
                 self.last_capture_time = now
+                captured = True
                 print(f"Saved image: {save_path} for hour {current_hour}, updated last_capture_time to {self.last_capture_time}")
             except Exception as e:
                 print(f"Error capturing image: {str(e)}")
                 return {"error": str(e)}
 
+        # Send report after capture to ensure latest image is included
         if current_hour == self.send_time and not self.sent_this_hour:
             print(f"Send time {self.send_time} matched, preparing report for {today}")
             try:
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}")]
                 images_by_hour = {}
                 for img in all_images:
-                    # Extract HH from YYYYMMDD_HHMMSS
-                    hour = int(img.split('_')[1][8:10])
+                    hour = int(img.split('_')[2][0:2])  # Extract HH from HHMMSS in filename
                     if start_time <= hour < end_time:
-                        # Latest per hour
-                        images_by_hour[hour] = img
+                        images_by_hour[hour] = img  # Latest per hour
                 
                 images_to_send = list(images_by_hour.values())
                 if images_to_send:
