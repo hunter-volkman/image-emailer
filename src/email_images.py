@@ -43,13 +43,13 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.frequency = 3600  # 1 hour for tomorrow
+        self.frequency = 3600  # 1 hour (as default)
         self.timeframe = [7, 19]  # 7 AM to 7 PM EST
         self.report_time = 19     # 7 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
-        self.base_dir = "/home/hunter.volkman/images"  # Renamed from store_images
+        self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
         self.last_report_time = None
         self.crop_top = 0
@@ -140,7 +140,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Report time {self.report_time} matched, preparing report for {today}")
             if not self.last_report_time or (now - self.last_report_time).days >= 1:
                 try:
-                    # Smart selection: latest image per hour within timeframe
+                    # Select latest image per hour within timeframe
                     all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}")]
                     images_by_hour = {}
                     for img in all_images:
