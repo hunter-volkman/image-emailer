@@ -43,14 +43,15 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.frequency = 3600  # 1 hour (as default)
+        self.frequency = 3600  # 1 hour for tomorrow
         self.timeframe = [7, 19]  # 7 AM to 7 PM EST
-        self.send_time = 20       # 8 PM EST
+        self.send_time = 19       # 7 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
+        self.sent_this_hour = False  # New flag to limit emails
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -63,7 +64,7 @@ class EmailImages(Sensor, EasyResource):
         self.password = attributes["password"]
         self.frequency = attributes.get("frequency", 3600)
         self.timeframe = attributes.get("timeframe", [7, 19])
-        self.send_time = attributes.get("send_time", 20)
+        self.send_time = attributes.get("send_time", 19)
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
@@ -82,6 +83,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Successfully resolved camera: {self.camera_name}")
         
         self.last_capture_time = None
+        self.sent_this_hour = False  # Reset on reconfigure
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
         print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, frequency: {self.frequency}s")
@@ -134,21 +136,20 @@ class EmailImages(Sensor, EasyResource):
                     print(f"Error capturing image: {str(e)}")
                     return {"error": str(e)}
 
-        if current_hour == self.send_time:
+        if current_hour == self.send_time and not self.sent_this_hour:
             print(f"Send time {self.send_time} matched, preparing report for {today}")
             try:
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}")]
                 images_by_hour = {}
                 for img in all_images:
-                    # Extract HH from YYYYMMDD_HHMMSS
-                    hour = int(img.split('_')[1][8:10])  
+                    hour = int(img.split('_')[1][8:10])  # Extract HH from YYYYMMDD_HHMMSS
                     if start_time <= hour < end_time:
-                        # Latest per hour
-                        images_by_hour[hour] = img  
+                        images_by_hour[hour] = img  # Latest per hour
                 
                 images_to_send = list(images_by_hour.values())
                 if images_to_send:
                     self.send_daily_report(images_to_send, now, daily_dir)
+                    self.sent_this_hour = True  # Mark as sent this hour
                     print(f"Sent report with {len(images_to_send)} images; originals preserved.")
                     return {"email_sent": True}
                 else:
@@ -156,6 +157,8 @@ class EmailImages(Sensor, EasyResource):
             except Exception as e:
                 print(f"Error sending email: {str(e)}")
                 return {"error": str(e)}
+        elif current_hour != self.send_time:
+            self.sent_this_hour = False  # Reset when hour changes
 
         return {"status": "running"}
 
