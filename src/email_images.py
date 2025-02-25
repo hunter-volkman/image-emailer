@@ -55,7 +55,7 @@ class EmailImages(Sensor, EasyResource):
         self.camera = None
         self.camera_name = ""
         self.recipients = []
-        self.base_dir = "/home/hunter.volkman/store_images"
+        self.base_dir = "/home/hunter.volkman/images"  # Renamed from store_images
         self.startup_dir = os.path.join(self.base_dir, "startup")
         self.state_file = os.path.join(self.base_dir, "state.json")
         self.last_capture_time = None
@@ -90,7 +90,7 @@ class EmailImages(Sensor, EasyResource):
         self.send_time = attributes.get("send_time", 2000)
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
-        self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/store_images")
+        self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")  # Renamed
         self.startup_dir = os.path.join(self.base_dir, "startup")
         self.state_file = os.path.join(self.base_dir, "state.json")
 
@@ -130,15 +130,39 @@ class EmailImages(Sensor, EasyResource):
 
         # Initial startup capture
         if self.last_capture_time is None:
-            await self._capture_image(now, self.startup_dir, "startup")
-            self._save_state()
+            try:
+                print("Attempting to capture startup image")
+                image = await self.camera.get_image()
+                print("Got image, processing")
+                img = Image.open(BytesIO(image.data))
+                filename = f"startup_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
+                save_path = os.path.join(self.startup_dir, filename)
+                img.save(save_path, format="JPEG")
+                self.last_capture_time = now
+                print(f"Saved startup image: {save_path}")
+                self._save_state()
+            except Exception as e:
+                print(f"Error capturing startup image: {str(e)}")
+                return {"error": str(e)}
 
         # Scheduled captures
         current_time = now.hour * 100 + now.minute
         print(f"Current time: {current_time}, checking schedule {self.schedule}")
         if current_time in self.schedule:
-            await self._capture_image(now, daily_dir, "inventory")
-            self._save_state()
+            try:
+                print("Attempting to capture inventory image")
+                image = await self.camera.get_image()
+                print("Got image, processing")
+                img = Image.open(BytesIO(image.data))
+                filename = f"inventory_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
+                save_path = os.path.join(daily_dir, filename)
+                img.save(save_path, format="JPEG")
+                self.last_capture_time = now
+                print(f"Saved inventory image: {save_path}")
+                self._save_state()
+            except Exception as e:
+                print(f"Error capturing inventory image: {str(e)}")
+                return {"error": str(e)}
 
         # Daily report
         send_hour = self.send_time // 100
@@ -151,21 +175,6 @@ class EmailImages(Sensor, EasyResource):
             return {"email_sent": True}
 
         return {"status": "running"}
-
-    async def _capture_image(self, now: datetime.datetime, target_dir: str, prefix: str):
-        try:
-            print(f"Attempting to capture {prefix} image")
-            image = await self.camera.get_image()
-            print("Got image, processing")
-            img = Image.open(BytesIO(image.data))
-            filename = f"{prefix}_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
-            save_path = os.path.join(target_dir, filename)
-            img.save(save_path, format="JPEG")
-            self.last_capture_time = now
-            print(f"Saved {prefix} image: {save_path}")
-        except Exception as e:
-            print(f"Error capturing {prefix} image: {str(e)}")
-            raise
 
     async def _send_report(self, today: str, daily_dir: str, timestamp: datetime.datetime):
         images = [f for f in os.listdir(daily_dir) if f.startswith("inventory_")]
