@@ -208,8 +208,8 @@ class EmailImages(Sensor, EasyResource):
     def send_daily_report(self, image_files, timestamp, daily_dir):
         msg = MIMEMultipart()
         msg["From"] = self.email
-        msg["Subject"] = f"Daily Shelf Report - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST, ordered from earliest to latest."
+        msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
+        body = f"Attached are {len(image_files)} inventory images captured on {timestamp.strftime('%Y-%m-%d')} EST, ordered from earliest to latest."
         msg.attach(MIMEText(body, "plain"))
 
         # Single "To" header with all recipients
