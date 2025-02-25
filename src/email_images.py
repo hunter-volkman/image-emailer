@@ -51,6 +51,10 @@ class EmailImages(Sensor, EasyResource):
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
         self.sent_this_hour = False
+        self.crop_top = 0
+        self.crop_left = 0
+        self.crop_width = 0
+        self.crop_height = 0
         print(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
 
     def _get_last_capture_time(self, daily_dir):
@@ -58,7 +62,7 @@ class EmailImages(Sensor, EasyResource):
         if not os.path.exists(daily_dir):
             print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
-        images = [f for f in os.path.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
+        images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]  # Fixed: os.listdir
         if not images:
             print(f"No valid images found in {daily_dir}, last_capture_time remains None")
             return None
