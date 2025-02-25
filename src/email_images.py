@@ -209,7 +209,7 @@ class EmailImages(Sensor, EasyResource):
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} inventory images captured hourly on {timestamp.strftime('%Y-%m-%d')} EST, ordered from earliest to latest."
+        body = f"Attached are {len(image_files)} inventory images at 389 5th Ave, New York, NY captured on {timestamp.strftime('%Y-%m-%d')}, ordered from earliest to latest."
         msg.attach(MIMEText(body, "plain"))
 
         # Single "To" header with all recipients
