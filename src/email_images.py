@@ -51,10 +51,6 @@ class EmailImages(Sensor, EasyResource):
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
         self.sent_this_hour = False
-        self.crop_top = 0
-        self.crop_left = 0
-        self.crop_width = 0
-        self.crop_height = 0
         print(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
 
     def _get_last_capture_time(self, daily_dir):
@@ -62,7 +58,7 @@ class EmailImages(Sensor, EasyResource):
         if not os.path.exists(daily_dir):
             print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
-        images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
+        images = [f for f in os.path.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
         if not images:
             print(f"No valid images found in {daily_dir}, last_capture_time remains None")
             return None
@@ -186,7 +182,7 @@ class EmailImages(Sensor, EasyResource):
                     self.send_daily_report(images_to_send, now, daily_dir)
                     self.sent_this_hour = True
                     email_status = "sent"
-                    print(f"Sent report with {len(images_to_send)} images in chronological order; originals preserved.")
+                    print(f"Sent report with {len(images_to_send)} images in chronological order to {', '.join(self.recipients)}")
                 else:
                     email_status = "no_images"
                     print("No valid images to send for today within timeframe.")
@@ -211,6 +207,9 @@ class EmailImages(Sensor, EasyResource):
         body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST, ordered from earliest to latest."
         msg.attach(MIMEText(body, "plain"))
 
+        # Single "To" header with all recipients
+        msg["To"] = ", ".join(self.recipients)
+
         for image_file in image_files:  # Already sorted
             image_path = os.path.join(daily_dir, image_file)
             with open(image_path, "rb") as file:
@@ -225,10 +224,8 @@ class EmailImages(Sensor, EasyResource):
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
             smtp.starttls()
             smtp.login(self.email, self.password)
-            for recipient in self.recipients:
-                msg["To"] = recipient
-                smtp.send_message(msg)
-                print(f"Daily report sent to {recipient}")
+            smtp.send_message(msg)
+            print(f"Daily report sent to {msg['To']}")
 
 async def main():
     module = Module.from_args()
