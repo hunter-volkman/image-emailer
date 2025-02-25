@@ -65,17 +65,17 @@ The following attributes are available for this model:
 
 ### Setup Instructions
 
-1. **Install Dependencies**: Run ./setup.sh to create a virtual environment and install requirements (viam-sdk, pillow, typing-extensions).
-2. **Configure Remote Part**: On the Raspberry Pi, add the store's Viam machine as a remote part named "store" via the Viam app’s CONFIGURE tab.
-3. **Run the Module**: Execute ./run.sh to start the module.
+1. **Install Dependencies**: Run `./setup.sh` to create a virtual environment and install requirements (`viam-sdk`, `pillow`, `typing-extensions`).
+2. **Configure Remote Part**: On the Raspberry Pi, add the store's Viam machine as a remote part named "remote" via the Viam app’s CONFIGURE tab.
+3. **Run the Module**: Execute `./run.sh` to start the module.
 4. **Test Configuration**:
-* Ensure the camera name matches the remote part’s camera (e.g., "remote:camera").
-* Adjust crop_* parameters to focus on the shelf.
-* Set send_time to a near hour (e.g., 10 for 10:00 AM EST) for testing emails during development.
+* Ensure the `camera` name matches the remote part’s camera (e.g., "remote:camera").
+* Adjust `crop_*` parameters to focus on the shelf.
+* Set `send_time` to a near hour (e.g., 10 for 10:00 AM EST) for testing emails during development.
 
 
 ### Notes
-* **Capture Logic**: Captures images hourly at the start of each hour (e.g., 7:00, 8:00 AM EST) within timeframe. On power-up, it uses the latest image’s timestamp from `save_dir/YYYYMMDD` to resume at the next hour.
+* **Capture Logic**: Captures images hourly at the start of each hour (e.g., 7:00, 8:00 AM EST) within `timeframe`. On power-up, it uses the latest image’s timestamp from `save_dir/YYYYMMDD` to resume at the next hour.
 * **Image Storage**: Images are saved in daily subdirectories (e.g., `/home/hunter.volkman/images/20250225`) and never deleted—adjust `save_dir` for persistent storage.
 * **Email Report**: Sends one report per `send_time` hour with the latest image per hour captured that day.
 * **Power Cycles**: Automatically resumes capturing at the next hour after restart, based on the last saved image’s timestamp.
