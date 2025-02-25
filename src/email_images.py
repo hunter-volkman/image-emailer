@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -33,46 +34,81 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients"]
+        required = ["email", "password", "camera", "recipients", "schedule"]
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
+        mode = attributes.get("mode", "live")
+        if mode not in ["test", "live"]:
+            raise Exception("mode must be 'test' or 'live'")
+        for time in attributes["schedule"]:
+            if not (0 <= time <= 2359 and time % 100 < 60):
+                raise Exception(f"Schedule time {time} must be in HHMM format (0000-2359)")
+        send_time = attributes.get("send_time", 20)
+        if not (0 <= send_time <= 2359 and send_time % 100 < 60):
+            raise Exception(f"send_time {send_time} must be in HHMM format (0000-2359)")
         return [attributes["camera"]]
 
     def __init__(self, config: ComponentConfig):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.frequency = 60  # Default to 60s, overridden by config
-        self.timeframe = [4, 22]  # 4 AM to 10 PM EST
-        self.report_time = 20     # 8 PM EST
+        self.schedule = []  # List of HHMM times
+        self.mode = "live"
+        self.timeframe = [600, 2000]  # 6:00 AM to 8:00 PM EST in HHMM
+        self.send_time = 2000         # 8:00 PM EST in HHMM
         self.camera = None
         self.camera_name = ""
         self.recipients = []
-        self.save_dir = "/home/hunter.volkman/store_images"  # Specified dir
+        self.base_dir = "/home/hunter.volkman/store_images"
+        self.startup_dir = os.path.join(self.base_dir, "startup")
+        self.state_file = os.path.join(self.base_dir, "state.json")
         self.last_capture_time = None
-        self.last_report_time = None
+        self.last_send_time = None
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
-        print(f"Initialized EmailImages with name: {self.name}, save_dir: {self.save_dir}")
+        self._load_state()
+        print(f"Initialized {self.name} with base_dir: {self.base_dir}")
+
+    def _load_state(self):
+        if os.path.exists(self.state_file):
+            with open(self.state_file, "r") as f:
+                state = json.load(f)
+                if "last_capture_time" in state:
+                    self.last_capture_time = datetime.datetime.strptime(state["last_capture_time"], "%Y-%m-%d %H:%M:%S")
+                if "last_send_time" in state:
+                    self.last_send_time = datetime.datetime.strptime(state["last_send_time"], "%Y-%m-%d %H:%M:%S")
+            print(f"Loaded state: last_capture={self.last_capture_time}, last_send={self.last_send_time}")
+
+    def _save_state(self):
+        state = {
+            "last_capture_time": self.last_capture_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_capture_time else None,
+            "last_send_time": self.last_send_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_send_time else None
+        }
+        with open(self.state_file, "w") as f:
+            json.dump(state, f)
+        print(f"Saved state: {state}")
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
-        self.frequency = attributes.get("frequency", 60)
-        self.timeframe = attributes.get("timeframe", [4, 22])
-        self.report_time = attributes.get("report_time", 20)
+        self.schedule = attributes["schedule"]
+        self.mode = attributes.get("mode", "live")
+        self.timeframe = attributes.get("timeframe", [600, 2000])
+        self.send_time = attributes.get("send_time", 2000)
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
-        self.save_dir = attributes.get("save_dir", "/home/hunter.volkman/store_images")
+        self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/store_images")
+        self.startup_dir = os.path.join(self.base_dir, "startup")
+        self.state_file = os.path.join(self.base_dir, "state.json")
         self.crop_top = attributes.get("crop_top", 0)
         self.crop_left = attributes.get("crop_left", 0)
         self.crop_width = attributes.get("crop_width", 0)
         self.crop_height = attributes.get("crop_height", 0)
-        
+
         camera_resource_name = ResourceName(
             namespace="rdk", type="component", subtype="camera", name=self.camera_name
         )
@@ -81,12 +117,11 @@ class EmailImages(Sensor, EasyResource):
             print(f"Could not resolve camera: {self.camera_name}. Check configuration.")
         else:
             print(f"Successfully resolved camera: {self.camera_name}")
-        
-        self.last_capture_time = None
-        self.last_report_time = None
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-        print(f"Reconfigured {self.name} with save_dir: {self.save_dir}, frequency: {self.frequency}s")
+
+        for dir_path in [self.base_dir, self.startup_dir]:
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+        print(f"Reconfigured {self.name} with mode: {self.mode}, schedule: {self.schedule}, send_time: {self.send_time}")
 
     async def get_readings(
         self,
@@ -95,9 +130,9 @@ class EmailImages(Sensor, EasyResource):
         timeout: Optional[float] = None,
         **kwargs
     ) -> Mapping[str, SensorReading]:
-        now = datetime.datetime.now()  # Local time is EST
-        current_hour = now.hour
-        print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}, hour: {current_hour}")
+        now = datetime.datetime.now()  # EST
+        current_hhmm = now.hour * 100 + now.minute
+        print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}, HHMM: {current_hhmm}")
         
         if not self.camera:
             print("No camera available.")
@@ -105,70 +140,95 @@ class EmailImages(Sensor, EasyResource):
 
         start_time, end_time = self.timeframe
         print(f"Checking timeframe [{start_time}, {end_time}]")
+        today = now.strftime('%Y%m%d')
+        daily_dir = os.path.join(self.base_dir, today)
+        cropped_dir = os.path.join(daily_dir, "cropped")
+        for dir_path in [daily_dir, cropped_dir]:
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
 
-        if start_time <= current_hour < end_time:
-            time_since_last = (now - self.last_capture_time).total_seconds() if self.last_capture_time else float('inf')
-            print(f"Time since last capture: {time_since_last:.2f}s, frequency: {self.frequency}s")
-            if not self.last_capture_time or time_since_last >= self.frequency:
-                try:
-                    print("Attempting to get image from camera")
-                    image = await self.camera.get_image()
-                    print("Got image, processing")
-                    img = Image.open(BytesIO(image.data))
-                    crop_width = self.crop_width or img.width - self.crop_left
-                    crop_height = self.crop_height or img.height - self.crop_top
-                    crop_top = max(0, min(self.crop_top, img.height - 1))
-                    crop_left = max(0, min(self.crop_left, img.width - 1))
-                    crop_width = min(crop_width, img.width - crop_left)
-                    crop_height = min(crop_height, img.height - crop_top)
-                    cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
-                    
-                    filename = f"image_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
-                    save_path = os.path.join(self.save_dir, filename)
-                    cropped_img.save(save_path, format="JPEG")
-                    self.last_capture_time = now
-                    print(f"Saved image: {save_path}")
-                except Exception as e:
-                    print(f"Error capturing image: {str(e)}")
-                    return {"error": str(e)}
+        # Initial startup capture
+        if self.last_capture_time is None:
+            await self._capture_image(now, self.startup_dir, "startup")
+            self._save_state()
 
-        if current_hour == self.report_time:
-            today = now.strftime('%Y%m%d')
-            print(f"Report time {self.report_time} matched, preparing report for {today}")
-            if not self.last_report_time or (now - self.last_report_time).days >= 1:
-                try:
-                    images = [f for f in os.listdir(self.save_dir) if f.startswith(f"image_{today}")]
-                    if images:
-                        self.send_daily_report(images, now)
-                        self.last_report_time = now
-                        for img in images:
-                            os.remove(os.path.join(self.save_dir, img))
-                        print(f"Cleaned up {len(images)} images after sending.")
-                        return {"email_sent": True}
-                    else:
-                        print("No images to send for today.")
-                except Exception as e:
-                    print(f"Error sending email: {str(e)}")
-                    return {"error": str(e)}
+        # Regular captures
+        if start_time <= current_hhmm < end_time:
+            should_capture = False
+            if self.mode == "test":
+                time_since_last = (now - self.last_capture_time).total_seconds() if self.last_capture_time else float('inf')
+                print(f"Test mode: Time since last capture: {time_since_last:.2f}s, interval: 60s")
+                should_capture = time_since_last >= 60
+            elif self.mode == "live":
+                current_time = now.hour * 100 + now.minute
+                print(f"Live mode: Current time: {current_time}, checking schedule {self.schedule}")
+                should_capture = current_time in self.schedule
+
+            if should_capture:
+                await self._capture_image(now, daily_dir, "hourly")
+                self._save_state()
+
+        # Daily report
+        send_hour = self.send_time // 100
+        send_minute = self.send_time % 100
+        if now.hour == send_hour and now.minute == send_minute and (not self.last_send_time or (now - self.last_send_time).days >= 1):
+            print(f"Send time {self.send_time} matched, preparing report for {today}")
+            await self._send_report(today, daily_dir, cropped_dir, now)
+            self.last_send_time = now
+            self._save_state()
+            return {"email_sent": True}
 
         return {"status": "running"}
 
-    def send_daily_report(self, image_files, timestamp):
+    async def _capture_image(self, now: datetime.datetime, target_dir: str, prefix: str):
+        try:
+            print(f"Attempting to capture {prefix} image")
+            image = await self.camera.get_image()
+            print("Got image, processing")
+            img = Image.open(BytesIO(image.data))
+            filename = f"{prefix}_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
+            save_path = os.path.join(target_dir, filename)
+            img.save(save_path, format="JPEG")
+            self.last_capture_time = now
+            print(f"Saved {prefix} image: {save_path}")
+        except Exception as e:
+            print(f"Error capturing {prefix} image: {str(e)}")
+            raise
+
+    async def _send_report(self, today: str, daily_dir: str, cropped_dir: str, timestamp: datetime.datetime):
+        images = [f for f in os.listdir(daily_dir) if f.startswith("hourly_")]
+        if not images:
+            print("No hourly images to send for today.")
+            return
+
+        print(f"Preparing report with {len(images)} hourly images")
         msg = MIMEMultipart()
         msg["From"] = self.email
-        msg["Subject"] = f"Daily Shelf Report - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} EST."
+        msg["Subject"] = f"Daily Inventory Report - {timestamp.strftime('%Y-%m-%d')}"
+        body = f"Attached are {len(images)} inventory images captured on {timestamp.strftime('%Y-%m-%d')} EST."
         msg.attach(MIMEText(body, "plain"))
 
-        for image_file in image_files:
-            image_path = os.path.join(self.save_dir, image_file)
-            with open(image_path, "rb") as file:
+        for image_file in images:
+            orig_path = os.path.join(daily_dir, image_file)
+            cropped_file = f"cropped_{image_file}"
+            cropped_path = os.path.join(cropped_dir, cropped_file)
+            
+            img = Image.open(orig_path)
+            crop_width = self.crop_width or img.width - self.crop_left
+            crop_height = self.crop_height or img.height - self.crop_top
+            crop_top = max(0, min(self.crop_top, img.height - 1))
+            crop_left = max(0, min(self.crop_left, img.width - 1))
+            crop_width = min(crop_width, img.width - crop_left)
+            crop_height = min(crop_height, img.height - crop_top)
+            cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
+            cropped_img.save(cropped_path, format="JPEG")
+            print(f"Created cropped image: {cropped_path}")
+
+            with open(cropped_path, "rb") as file:
                 attachment = MIMEBase("application", "octet-stream")
                 attachment.set_payload(file.read())
                 encoders.encode_base64(attachment)
-                attachment.add_header(
-                    "Content-Disposition", f"attachment; filename={image_file}"
-                )
+                attachment.add_header("Content-Disposition", f"attachment; filename={cropped_file}")
                 msg.attach(attachment)
 
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
