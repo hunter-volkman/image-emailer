@@ -26,6 +26,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         sensor = cls(config)
+        print(f"Created new EmailImages instance for {config.name}")
         sensor.reconfigure(config, dependencies)
         return sensor
 
@@ -36,10 +37,9 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
-        return [attributes["camera"]]  # "remote-1:ffmpeg"
+        return [attributes["camera"]]
 
     def __init__(self, config: ComponentConfig):
-        # Explicitly pass the name from config to ensure EasyResource sets it correctly
         super().__init__(config.name)
         self.email = ""
         self.password = ""
@@ -56,6 +56,7 @@ class EmailImages(Sensor, EasyResource):
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
+        print(f"Initialized EmailImages with name: {self.name}")
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         attributes = struct_to_dict(config.attributes)
@@ -64,7 +65,7 @@ class EmailImages(Sensor, EasyResource):
         self.frequency = attributes.get("frequency", 3600)
         self.timeframe = attributes.get("timeframe", [7, 19])
         self.report_time = attributes.get("report_time", 19)
-        self.camera_name = attributes["camera"]  # "remote-1:ffmpeg"
+        self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.save_dir = attributes.get("save_dir", "/tmp/store_images")
         self.crop_top = attributes.get("crop_top", 0)
@@ -85,6 +86,7 @@ class EmailImages(Sensor, EasyResource):
         self.last_report_time = None
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
+        print(f"Reconfigured {self.name} with save_dir: {self.save_dir}")
 
     async def get_readings(
         self,
@@ -93,6 +95,7 @@ class EmailImages(Sensor, EasyResource):
         timeout: Optional[float] = None,
         **kwargs
     ) -> Mapping[str, SensorReading]:
+        print(f"get_readings called for {self.name} at {datetime.datetime.now()}")
         if not self.camera:
             print("No camera available.")
             return {"error": "No camera available"}
