@@ -36,10 +36,11 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
-        return [attributes["camera"]]  # Return "remote-1:ffmpeg"
+        return [attributes["camera"]]  # "remote-1:ffmpeg"
 
     def __init__(self, config: ComponentConfig):
-        super().__init__(config)
+        # Explicitly pass the name from config to ensure EasyResource sets it correctly
+        super().__init__(config.name)
         self.email = ""
         self.password = ""
         self.frequency = 3600
@@ -101,7 +102,6 @@ class EmailImages(Sensor, EasyResource):
         current_hour = est_now.hour
         start_time, end_time = self.timeframe
 
-        # Capture image during timeframe
         if start_time <= current_hour < end_time:
             if not self.last_capture_time or (now - self.last_capture_time).total_seconds() >= self.frequency:
                 try:
@@ -124,7 +124,6 @@ class EmailImages(Sensor, EasyResource):
                     print(f"Error capturing image: {e}")
                     return {"error": str(e)}
 
-        # Send daily report at report_time
         if current_hour == self.report_time:
             today = est_now.strftime('%Y%m%d')
             if not self.last_report_time or (now - self.last_report_time).days >= 1:
