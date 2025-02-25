@@ -36,21 +36,21 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
-        return [attributes["camera"]]
+        return [attributes["camera"]]  # Return "remote-1:ffmpeg"
 
     def __init__(self, config: ComponentConfig):
         super().__init__(config)
         self.email = ""
         self.password = ""
-        self.frequency = 3600  # 1 hour
-        self.timeframe = [7, 19]  # 7 AM to 7 PM EST
-        self.report_time = 19  # 7 PM EST by default
+        self.frequency = 3600
+        self.timeframe = [7, 19]
+        self.report_time = 19
         self.camera = None
         self.camera_name = ""
         self.recipients = []
-        self.save_dir = "/tmp/store_images"  # Unique dir for this module
+        self.save_dir = "/tmp/store_images"
         self.last_capture_time = None
-        self.last_report_time = None  # To prevent duplicate reports
+        self.last_report_time = None
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -63,7 +63,7 @@ class EmailImages(Sensor, EasyResource):
         self.frequency = attributes.get("frequency", 3600)
         self.timeframe = attributes.get("timeframe", [7, 19])
         self.report_time = attributes.get("report_time", 19)
-        self.camera_name = attributes["camera"]
+        self.camera_name = attributes["camera"]  # "remote-1:ffmpeg"
         self.recipients = attributes["recipients"]
         self.save_dir = attributes.get("save_dir", "/tmp/store_images")
         self.crop_top = attributes.get("crop_top", 0)
@@ -97,10 +97,11 @@ class EmailImages(Sensor, EasyResource):
             return {"error": "No camera available"}
 
         now = datetime.datetime.now()
+        est_now = now + datetime.timedelta(hours=3)  # PST to EST
         current_hour = est_now.hour
         start_time, end_time = self.timeframe
 
-        # Capture image hourly during timeframe
+        # Capture image during timeframe
         if start_time <= current_hour < end_time:
             if not self.last_capture_time or (now - self.last_capture_time).total_seconds() >= self.frequency:
                 try:
@@ -132,7 +133,6 @@ class EmailImages(Sensor, EasyResource):
                     if images:
                         self.send_daily_report(images, est_now)
                         self.last_report_time = now
-                        # Optional: Clean up after sending
                         for img in images:
                             os.remove(os.path.join(self.save_dir, img))
                         print(f"Cleaned up {len(images)} images after sending.")
@@ -147,7 +147,7 @@ class EmailImages(Sensor, EasyResource):
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Shelf Report - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')} from 7 AM to 7 PM EST."
+        body = f"Attached are {len(image_files)} shelf images captured on {timestamp.strftime('%Y-%m-%d')}."
         msg.attach(MIMEText(body, "plain"))
 
         for image_file in image_files:
