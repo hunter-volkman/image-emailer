@@ -43,9 +43,9 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.frequency = 3600  # 1 hour (as default)
+        self.frequency = 3600  # 1 hour
         self.timeframe = [7, 19]  # 7 AM to 7 PM EST
-        self.send_time = 20       # 8 PM EST
+        self.send_time = 19       # 7 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
@@ -83,7 +83,6 @@ class EmailImages(Sensor, EasyResource):
             print(f"Successfully resolved camera: {self.camera_name}")
         
         self.last_capture_time = None
-        # Reset on reconfigure
         self.sent_this_hour = False
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -96,8 +95,7 @@ class EmailImages(Sensor, EasyResource):
         timeout: Optional[float] = None,
         **kwargs
     ) -> Mapping[str, SensorReading]:
-        # Local time is EST
-        now = datetime.datetime.now()
+        now = datetime.datetime.now()  # Local time is EST
         current_hour = now.hour
         print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}, hour: {current_hour}")
         
@@ -112,10 +110,9 @@ class EmailImages(Sensor, EasyResource):
         if not os.path.exists(daily_dir):
             os.makedirs(daily_dir)
 
-        if start_time <= current_hour < end_time:
-            time_since_last = (now - self.last_capture_time).total_seconds() if self.last_capture_time else float('inf')
-            print(f"Time since last capture: {time_since_last:.2f}s, frequency: {self.frequency}s")
-            if not self.last_capture_time or time_since_last >= self.frequency:
+        if start_time <= current_hour < end_time and now.minute == 0:  # Capture at :00
+            last_hour = self.last_capture_time.hour if self.last_capture_time else -1
+            if last_hour != current_hour:  # Only capture if not done this hour
                 try:
                     print("Attempting to get image from camera")
                     image = await self.camera.get_image()
@@ -144,16 +141,13 @@ class EmailImages(Sensor, EasyResource):
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}")]
                 images_by_hour = {}
                 for img in all_images:
-                    # Extract HH from YYYYMMDD_HHMMSS
-                    hour = int(img.split('_')[1][8:10])
+                    hour = int(img.split('_')[1][8:10])  # Extract HH from YYYYMMDD_HHMMSS
                     if start_time <= hour < end_time:
-                        # Latest per hour
-                        images_by_hour[hour] = img
+                        images_by_hour[hour] = img  # Latest per hour
                 
                 images_to_send = list(images_by_hour.values())
                 if images_to_send:
                     self.send_daily_report(images_to_send, now, daily_dir)
-                    # Mark as sent this hour
                     self.sent_this_hour = True
                     print(f"Sent report with {len(images_to_send)} images; originals preserved.")
                     return {"email_sent": True}
@@ -163,8 +157,7 @@ class EmailImages(Sensor, EasyResource):
                 print(f"Error sending email: {str(e)}")
                 return {"error": str(e)}
         elif current_hour != self.send_time:
-            # Reset when hour changes
-            self.sent_this_hour = False  
+            self.sent_this_hour = False
 
         return {"status": "running"}
 
