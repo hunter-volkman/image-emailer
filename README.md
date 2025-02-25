@@ -37,7 +37,8 @@ The following attributes are available for this model:
 | `camera` | string | Required  | Name of the remote camera (e.g., "example.camera") |
 | `frequency` | int | Optional  | Capture frequency in seconds (default: 1 hour) |
 | `timeframe` | list of int | Optional  | Start and end hours in EST (e.g., [7, 19]) |
-| `recipients` | list of string | Optional  | Email addresses to receive the report |
+| `recipients` | int | Optional  | Email addresses to receive the report |
+| `report_time` | list of string | Optional  | Hour (in EST, 0-23) to send daily email |
 | `save_dir` | string | Optional  | Directory to save images locally |
 | `crop_top` | int | Optional  | Top pixel coordinate for cropping |
 | `crop_left` | int | Optional  | Left pixel coordinate for cropping |
@@ -55,6 +56,7 @@ The following attributes are available for this model:
   "frequency": 3600,
   "timeframe": [7, 19],
   "recipients": ["recipient1@example.com", "recipient2@example.com"],
+  "report_time": 20,
   "save_dir": "/home/pi/images",
   "crop_top": 100,
   "crop_left": 100,
