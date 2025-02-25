@@ -51,6 +51,7 @@ class EmailImages(Sensor, EasyResource):
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
         self.sent_this_hour = False
+        self.email_status = "not_sent"  # Persistent status
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -62,7 +63,7 @@ class EmailImages(Sensor, EasyResource):
         if not os.path.exists(daily_dir):
             print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
-        images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]  # Fixed: os.listdir
+        images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
         if not images:
             print(f"No valid images found in {daily_dir}, last_capture_time remains None")
             return None
@@ -103,6 +104,7 @@ class EmailImages(Sensor, EasyResource):
         daily_dir = os.path.join(self.base_dir, today)
         self.last_capture_time = self._get_last_capture_time(daily_dir)
         self.sent_this_hour = False
+        self.email_status = "not_sent"  # Reset on reconfigure
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
         print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
@@ -165,7 +167,6 @@ class EmailImages(Sensor, EasyResource):
                 return {"error": str(e)}
 
         # Send report after capture, catch errors separately
-        email_status = "not_sent"
         if current_hour == self.send_time and not self.sent_this_hour:
             print(f"Send time {self.send_time} matched, preparing report for {today}")
             try:
@@ -185,23 +186,23 @@ class EmailImages(Sensor, EasyResource):
                 if images_to_send:
                     self.send_daily_report(images_to_send, now, daily_dir)
                     self.sent_this_hour = True
-                    email_status = "sent"
+                    self.email_status = "sent"  # Update persistent status
                     print(f"Sent report with {len(images_to_send)} images in chronological order to {', '.join(self.recipients)}")
                 else:
-                    email_status = "no_images"
+                    self.email_status = "no_images"
                     print("No valid images to send for today within timeframe.")
             except Exception as e:
-                email_status = f"error: {str(e)}"
+                self.email_status = f"error: {str(e)}"
                 print(f"Error sending email: {str(e)}")
 
         elif current_hour != self.send_time:
             self.sent_this_hour = False
 
-        # Return status even if email fails
+        # Return status with persistent email_status
         return {
             "status": "running",
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": email_status
+            "email_status": self.email_status
         }
 
     def send_daily_report(self, image_files, timestamp, daily_dir):
