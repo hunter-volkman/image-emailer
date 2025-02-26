@@ -44,24 +44,23 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.timeframe = [7, 20]  # 7 AM to 8 PM EST (7 to 19 inclusive for captures)
+        self.timeframe = [7, 20]  # 7 AM to 8 PM EST
         self.send_time = 19       # 7 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
-        self.sent_today = False   # Tracks daily scheduled send
-        self.email_status = "not_sent"  # Persistent status
+        self.sent_today = False
+        self.email_status = "not_sent"
+        self.loop_task = None
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
-        self.loop_task = None
         print(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
 
     def _get_last_capture_time(self, daily_dir):
-        """Determine last capture time from files in daily_dir."""
         if not os.path.exists(daily_dir):
             print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
@@ -111,13 +110,11 @@ class EmailImages(Sensor, EasyResource):
             os.makedirs(self.base_dir)
         print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
 
-        # Start or restart the capture loop
         if self.loop_task:
             self.loop_task.cancel()
         self.loop_task = asyncio.create_task(self.capture_loop())
 
     def generate_events(self, day: datetime.date):
-        """Generate capture and send events for a given day."""
         events = []
         start_time, end_time = self.timeframe
         for hour in range(start_time, end_time):
@@ -128,42 +125,42 @@ class EmailImages(Sensor, EasyResource):
         return sorted(events, key=lambda x: x[0])
 
     async def capture_loop(self):
-        """Background loop to handle scheduled captures and email sending."""
         while True:
-            now = datetime.datetime.now()
-            today = now.date()
-            future_events = self.generate_events(today)
+            try:
+                now = datetime.datetime.now()
+                today = now.date()
+                future_events = self.generate_events(today)
+                future_events = [(time, event) for time, event in future_events if time > now]
 
-            # Filter out past events for today
-            future_events = [(time, event) for time, event in future_events if time > now]
+                if not future_events:
+                    tomorrow = today + datetime.timedelta(days=1)
+                    future_events = self.generate_events(tomorrow)
+                    next_time = future_events[0][0]
+                    sleep_seconds = (next_time - now).total_seconds()
+                    print(f"All events for {today} done, sleeping until {next_time} ({sleep_seconds} seconds)")
+                    await asyncio.sleep(sleep_seconds)
+                    continue
 
-            if not future_events:
-                tomorrow = today + datetime.timedelta(days=1)
-                future_events = self.generate_events(tomorrow)
-                first_event_time = future_events[0][0]
-                sleep_seconds = (first_event_time - now).total_seconds()
-                print(f"All events for today complete, sleeping until {first_event_time} ({sleep_seconds} seconds)")
+                next_time, next_type = future_events[0]
+                sleep_seconds = max(0, (next_time - now).total_seconds())
+                print(f"Scheduling {next_type} at {next_time}, sleeping for {sleep_seconds} seconds")
                 await asyncio.sleep(sleep_seconds)
-                continue
 
-            next_event_time, next_event_type = future_events[0]
-            sleep_seconds = max(0, (next_event_time - now).total_seconds())
-            print(f"Next event: {next_event_type} at {next_event_time}, sleeping for {sleep_seconds} seconds")
-            await asyncio.sleep(sleep_seconds)
-
-            now = datetime.datetime.now()
-            if next_event_type == "capture":
-                await self.capture_image(next_event_time)
-            elif next_event_type == "send" and not self.sent_today:
-                await self.send_report(next_event_time)
+                now = datetime.datetime.now()
+                if next_type == "capture":
+                    await self.capture_image(next_time)
+                elif next_type == "send" and not self.sent_today:
+                    await self.send_report(next_time)
+            except Exception as e:
+                print(f"Capture loop error: {str(e)}, retrying in 60 seconds")
+                await asyncio.sleep(60)  # Retry after a delay
 
     async def capture_image(self, time: datetime.datetime):
-        """Capture and save an image at the specified time."""
         if not self.camera:
-            print("No camera available, skipping capture.")
+            print(f"No camera available at {time}, skipping capture")
             return
         try:
-            print(f"Attempting to capture image at {time}")
+            print(f"Capturing image at {time}")
             image = await self.camera.get_image()
             img = Image.open(BytesIO(image.data))
             crop_width = self.crop_width or img.width - self.crop_left
@@ -182,28 +179,27 @@ class EmailImages(Sensor, EasyResource):
             save_path = os.path.join(daily_dir, filename)
             cropped_img.save(save_path, format="JPEG")
             self.last_capture_time = time
-            print(f"Captured and saved image: {save_path}")
+            print(f"Saved image: {save_path}")
         except Exception as e:
-            print(f"Error capturing image at {time}: {str(e)}")
+            print(f"Capture error at {time}: {str(e)}")
 
     async def send_report(self, time: datetime.datetime):
-        """Send the daily email report asynchronously for scheduled send."""
         today_str = time.strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
-            print(f"No images directory for {today_str}, skipping scheduled report.")
+            print(f"No directory for {today_str}, skipping report")
             self.email_status = "no_images"
             return
 
         all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
         if not all_images:
-            print(f"No images found for {today_str}, skipping scheduled report.")
+            print(f"No images for {today_str}, skipping report")
             self.email_status = "no_images"
             return
 
         images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         try:
-            print(f"Preparing scheduled report with {len(images_to_send)} images at {time}")
+            print(f"Sending report with {len(images_to_send)} images at {time}")
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
@@ -211,13 +207,12 @@ class EmailImages(Sensor, EasyResource):
             )
             self.sent_today = True
             self.email_status = "sent"
-            print(f"Scheduled report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
+            print(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
             self.email_status = f"error: {str(e)}"
-            print(f"Error sending scheduled email at {time}: {str(e)}")
+            print(f"Email send error at {time}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
-        """Synchronous method to send the daily report, used by both scheduled and manual sends."""
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
@@ -242,31 +237,23 @@ class EmailImages(Sensor, EasyResource):
             smtp.send_message(msg)
             print(f"Daily report sent to {msg['To']}")
 
-    async def do_command(
-        self,
-        command: Mapping[str, Any],
-        *,
-        timeout: Optional[float] = None,
-        **kwargs
-    ) -> Mapping[str, Any]:
-        """Handle custom commands, e.g., send_email for testing."""
+    async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
         if command.get("command") == "send_email":
-            day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))  # Default to today
+            day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
-                # Validate day format
                 timestamp = datetime.datetime.strptime(day, '%Y%m%d')
                 daily_dir = os.path.join(self.base_dir, day)
                 if not os.path.exists(daily_dir):
-                    print(f"No directory found for {day}")
+                    print(f"No directory for {day}")
                     return {"status": f"No images directory for {day}"}
 
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
                 if not all_images:
-                    print(f"No images found for {day}")
+                    print(f"No images for {day}")
                     return {"status": f"No images found for {day}"}
 
                 images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-                print(f"Manual send triggered for {day} with {len(images_to_send)} images")
+                print(f"Manual send for {day} with {len(images_to_send)} images")
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
@@ -280,14 +267,7 @@ class EmailImages(Sensor, EasyResource):
                 return {"status": f"Error sending email: {str(e)}"}
         return {"status": "Unknown command"}
 
-    async def get_readings(
-        self,
-        *,
-        extra: Optional[Mapping[str, Any]] = None,
-        timeout: Optional[float] = None,
-        **kwargs
-    ) -> Mapping[str, SensorReading]:
-        """Return current status without performing actions."""
+    async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         now = datetime.datetime.now()
         print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
         if not self.camera:
