@@ -117,6 +117,9 @@ class EmailImages(Sensor, EasyResource):
     def generate_events(self, day: datetime.date):
         events = []
         start_time, end_time = self.timeframe
+        # Convert to integers to ensure range works
+        start_time = int(start_time)
+        end_time = int(end_time)
         for hour in range(start_time, end_time):
             event_time = datetime.datetime.combine(day, datetime.time(hour=hour, minute=0, second=0))
             events.append((event_time, "capture"))
@@ -153,7 +156,7 @@ class EmailImages(Sensor, EasyResource):
                     await self.send_report(next_time)
             except Exception as e:
                 print(f"Capture loop error: {str(e)}, retrying in 60 seconds")
-                await asyncio.sleep(60)  # Retry after a delay
+                await asyncio.sleep(60)
 
     async def capture_image(self, time: datetime.datetime):
         if not self.camera:
