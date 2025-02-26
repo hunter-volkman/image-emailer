@@ -53,6 +53,7 @@ class EmailImages(Sensor, EasyResource):
         self.last_capture_time = None
         self.sent_this_hour = False
         self.email_status = "not_sent"
+        self.loop_task = None
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -109,97 +110,94 @@ class EmailImages(Sensor, EasyResource):
             os.makedirs(self.base_dir)
         print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
 
-    async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
-        now = datetime.datetime.now()
-        current_hour = now.hour
-        print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}, hour: {current_hour}")
-        
+        if self.loop_task:
+            self.loop_task.cancel()
+        self.loop_task = asyncio.create_task(self.capture_loop())
+
+    async def capture_loop(self):
+        while True:
+            try:
+                now = datetime.datetime.now()
+                today = now.date()
+                start_time, end_time = [int(t) for t in self.timeframe]
+                if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
+                    await self.capture_image(now)
+                if now.hour == self.send_time and not self.sent_this_hour:
+                    await self.send_report(now)
+                await asyncio.sleep(60 - now.second)
+            except Exception as e:
+                print(f"Loop error: {str(e)}, retrying in 60s")
+                await asyncio.sleep(60)
+
+    async def capture_image(self, now):
         if not self.camera:
-            print("No camera available.")
-            return {"error": "No camera available"}
+            print(f"No camera at {now}")
+            return
+        try:
+            print(f"Capturing image at {now}")
+            image = await self.camera.get_image()
+            img = Image.open(BytesIO(image.data))
+            crop_width = self.crop_width or img.width - self.crop_left
+            crop_height = self.crop_height or img.height - self.crop_top
+            crop_top = max(0, min(self.crop_top, img.height - 1))
+            crop_left = max(0, min(self.crop_left, img.width - 1))
+            crop_width = min(crop_width, img.width - crop_left)
+            crop_height = min(crop_height, img.height - crop_top)
+            cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
 
-        start_time, end_time = self.timeframe
-        print(f"Checking timeframe [{start_time}, {end_time}]")
-        today = now.strftime('%Y%m%d')
-        daily_dir = os.path.join(self.base_dir, today)
+            today_str = now.strftime('%Y%m%d')
+            daily_dir = os.path.join(self.base_dir, today_str)
+            os.makedirs(daily_dir, exist_ok=True)
+            filename = f"image_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
+            save_path = os.path.join(daily_dir, filename)
+            cropped_img.save(save_path, "JPEG")
+            self.last_capture_time = now
+            print(f"Saved image: {save_path}")
+        except Exception as e:
+            print(f"Capture error at {now}: {str(e)}")
+
+    async def send_report(self, now):
+        today_str = now.strftime('%Y%m%d')
+        daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
-            os.makedirs(daily_dir)
+            print(f"No directory for {today_str}, skipping report")
+            self.email_status = "no_images"
+            return
 
-        # Determine next capture hour
-        if self.last_capture_time:
-            last_hour = self.last_capture_time.hour
-            next_hour = last_hour + 1 if last_hour < end_time - 1 else start_time
-            print(f"Last capture time: {self.last_capture_time}, last_hour: {last_hour}, next_hour: {next_hour}")
-        else:
-            next_hour = start_time
-            print(f"No last capture time, setting next_hour to start_time: {next_hour}")
+        all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
+        if not all_images:
+            print(f"No images for {today_str}, skipping report")
+            self.email_status = "no_images"
+            return
 
-        # Capture if it's time for the next hour
-        captured = False
-        if start_time <= current_hour < end_time and current_hour >= next_hour:
-            try:
-                print("Attempting to get image from camera")
-                image = await self.camera.get_image()
-                print("Got image, processing")
-                img = Image.open(BytesIO(image.data))
-                crop_width = self.crop_width or img.width - self.crop_left
-                crop_height = self.crop_height or img.height - self.crop_top
-                crop_top = max(0, min(self.crop_top, img.height - 1))
-                crop_left = max(0, min(self.crop_left, img.width - 1))
-                crop_width = min(crop_width, img.width - crop_left)
-                crop_height = min(crop_height, img.height - crop_top)
-                cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
-                
-                filename = f"image_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
-                save_path = os.path.join(daily_dir, filename)
-                cropped_img.save(save_path, format="JPEG")
-                self.last_capture_time = now
-                captured = True
-                print(f"Saved image: {save_path} for hour {current_hour}, updated last_capture_time to {self.last_capture_time}")
-            except Exception as e:
-                print(f"Error capturing image: {str(e)}")
-                return {"error": str(e)}
+        # Option 1: All images, sorted chronologically
+        images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
 
-        # Send report after capture
-        if current_hour == self.send_time and not self.sent_this_hour:
-            print(f"Send time {self.send_time} matched, preparing report for {today}")
-            try:
-                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today}") and f.endswith("_EST.jpg")]
-                images_by_hour = {}
-                for img in all_images:
-                    try:
-                        hour = int(img.split('_')[2][0:2])
-                        if start_time <= hour < end_time:
-                            images_by_hour[hour] = img
-                    except (ValueError, IndexError):
-                        print(f"Skipping invalid filename: {img}")
-                        continue
-                
-                images_to_send = sorted(images_by_hour.values(), key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-                if images_to_send:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(
-                        None,
-                        functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
-                    )
-                    self.sent_this_hour = True
-                    self.email_status = "sent"
-                    print(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
-                else:
-                    self.email_status = "no_images"
-                    print("No valid images to send for today within timeframe.")
-            except Exception as e:
-                self.email_status = f"error: {str(e)}"
-                print(f"Error sending email: {str(e)}")
+        # Option 2: One per hour (uncomment to use instead)
+        # images_by_hour = {}
+        # start_time, end_time = self.timeframe
+        # for img in all_images:
+        #     try:
+        #         hour = int(img.split('_')[2][0:2])
+        #         if start_time <= hour < end_time:
+        #             images_by_hour[hour] = img
+        #     except (ValueError, IndexError):
+        #         print(f"Skipping invalid filename: {img}")
+        # images_to_send = sorted(images_by_hour.values(), key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
 
-        elif current_hour != self.send_time:
-            self.sent_this_hour = False
-
-        return {
-            "status": "running",
-            "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": self.email_status
-        }
+        try:
+            print(f"Sending report with {len(images_to_send)} images at {now}")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
+            )
+            self.sent_this_hour = True
+            self.email_status = "sent"
+            print(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
+        except Exception as e:
+            self.email_status = f"error: {str(e)}"
+            print(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
         msg = MIMEMultipart()
@@ -225,6 +223,47 @@ class EmailImages(Sensor, EasyResource):
             smtp.login(self.email, self.password)
             smtp.send_message(msg)
             print(f"Daily report sent to {msg['To']}")
+
+    async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
+        if command.get("command") == "send_email":
+            day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
+            try:
+                timestamp = datetime.datetime.strptime(day, '%Y%m%d')
+                daily_dir = os.path.join(self.base_dir, day)
+                if not os.path.exists(daily_dir):
+                    print(f"No directory for {day}")
+                    return {"status": f"No images directory for {day}"}
+
+                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
+                if not all_images:
+                    print(f"No images for {day}")
+                    return {"status": f"No images found for {day}"}
+
+                images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
+                print(f"Manual send for {day} with {len(images_to_send)} images")
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    functools.partial(self._send_daily_report_sync, images_to_send, timestamp, daily_dir)
+                )
+                print(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
+                return {"status": f"Sent email with {len(images_to_send)} images for {day}"}
+            except ValueError:
+                return {"status": f"Invalid day format: {day}, use YYYYMMDD"}
+            except Exception as e:
+                return {"status": f"Error sending email: {str(e)}"}
+        return {"status": "Unknown command"}
+
+    async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
+        now = datetime.datetime.now()
+        print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
+        if not self.camera:
+            return {"error": "No camera available"}
+        return {
+            "status": "running",
+            "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
+            "email_status": self.email_status
+        }
 
 async def main():
     module = Module.from_args()
