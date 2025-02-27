@@ -1,10 +1,10 @@
 # Module image-emailer
 
-This module enables a Raspberry Pi to connect to a remote Viam machine, capture images hourly on the hour (e.g., 7:00 AM, 8:00 AM EST) from a camera during specified operating hours, crop them to focus on a shelf, and email them as a daily report. Designed for monitoring stock levels, it prioritizes simplicity and reliability, automatically resuming captures after power cycles using the last captured image’s timestamp. Ideal for demo purposes and development testing.
+This module enables a Raspberry Pi to connect to a remote Viam machine, capture images hourly from a camera during specified operating hours (default 7 AM to 8 PM EST), crop them to focus on a shelf, and email a daily report at a configurable time (default 7 PM EST). Designed for monitoring stock levels, it runs autonomously without requiring the Viam app’s CONTROL tab open, resuming captures after power cycles using the last image’s timestamp. Ideal for reliable shelf monitoring and development testing.
 
-## Model hunter:sensor:image-emailer
+## Model `hunter:sensor:image-emailer`
 
-A sensor component that captures images from a remote camera, processes them, and sends them via email on a configurable schedule. It runs locally on a Raspberry Pi, connects to a store's Viam machine, and operates from 7 AM to 7 PM EST by default, sending a report at 7 PM EST.
+A custom sensor component that autonomously captures images from a remote camera, processes them, and sends a daily email report. It operates locally on a Raspberry Pi, connects to a store’s Viam machine, and runs independently of external triggers once configured.
 
 ### Configuration
 
