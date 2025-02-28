@@ -173,9 +173,13 @@ class EmailImages(Sensor, EasyResource):
     async def restart_module(self):
         try:
             print(f"Attempting to restart local-module-1 on demopi at {datetime.datetime.now()}")
+            opts = RobotClient.Options.with_api_key(
+                api_key=self.api_key,
+                api_key_id=self.api_key_id
+            )
             robot = await RobotClient.at_address(
                 "demopi-main.4j0z3qgbzh.viam.cloud",
-                DialOptions.with_api_key(api_key=self.api_key, api_key_id=self.api_key_id)
+                options=opts
             )
             await robot.restart_module("local-module-1")
             self.last_restart_time = datetime.datetime.now()
