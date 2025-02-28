@@ -91,18 +91,18 @@ class EmailImages(Sensor, EasyResource):
         self.email = attributes["email"]
         self.password = attributes["password"]
         self.timeframe = attributes.get("timeframe", [7, 20])
-        self.send_time = attributes.get("send_time", 20)
+        self.send_time = int(float(attributes.get("send_time", 20)))  # Convert float to int
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
         self.api_key = attributes["api_key"]
         self.api_key_id = attributes["api_key_id"]
-        self.restart_time = attributes.get("restart_time", 6)
-        self.restart_minute = attributes.get("restart_minute", 30)
-        self.crop_top = attributes.get("crop_top", 0)
-        self.crop_left = attributes.get("crop_left", 0)
-        self.crop_width = attributes.get("crop_width", 0)
-        self.crop_height = attributes.get("crop_height", 0)
+        self.restart_time = int(float(attributes.get("restart_time", 6)))  # Convert float to int
+        self.restart_minute = int(float(attributes.get("restart_minute", 30)))  # Convert float to int
+        self.crop_top = int(float(attributes.get("crop_top", 0)))  # Ensure all numerics are ints
+        self.crop_left = int(float(attributes.get("crop_left", 0)))
+        self.crop_width = int(float(attributes.get("crop_width", 0)))
+        self.crop_height = int(float(attributes.get("crop_height", 0)))
 
         camera_resource_name = ResourceName(
             namespace="rdk", type="component", subtype="camera", name=self.camera_name
