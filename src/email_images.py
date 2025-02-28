@@ -17,8 +17,6 @@ from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import SensorReading, struct_to_dict
-from viam.robot.client import RobotClient
-from viam.rpc.dial import DialOptions
 from PIL import Image
 from io import BytesIO
 import functools
@@ -36,7 +34,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients", "api_key", "api_key_id"]
+        required = ["email", "password", "camera", "recipients"]
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
@@ -53,15 +51,9 @@ class EmailImages(Sensor, EasyResource):
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
-        self.last_restart_time = None
         self.sent_this_hour = False
         self.email_status = "not_sent"
         self.capture_loop_task = None
-        self.restart_loop_task = None
-        self.api_key = ""
-        self.api_key_id = ""
-        self.restart_time = 6     # 6 AM EST
-        self.restart_minute = 30  # 30 minutes past the hour
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -95,10 +87,6 @@ class EmailImages(Sensor, EasyResource):
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
-        self.api_key = attributes["api_key"]
-        self.api_key_id = attributes["api_key_id"]
-        self.restart_time = int(float(attributes.get("restart_time", 6)))
-        self.restart_minute = int(float(attributes.get("restart_minute", 30)))
         self.crop_top = int(float(attributes.get("crop_top", 0)))
         self.crop_left = int(float(attributes.get("crop_left", 0)))
         self.crop_width = int(float(attributes.get("crop_width", 0)))
@@ -126,10 +114,6 @@ class EmailImages(Sensor, EasyResource):
             self.capture_loop_task.cancel()
         self.capture_loop_task = asyncio.create_task(self.capture_loop())
 
-        if self.restart_loop_task:
-            self.restart_loop_task.cancel()
-        self.restart_loop_task = asyncio.create_task(self.restart_loop())
-
     async def capture_loop(self):
         while True:
             try:
@@ -144,49 +128,6 @@ class EmailImages(Sensor, EasyResource):
             except Exception as e:
                 print(f"Capture loop error: {str(e)}, retrying in 60s")
                 await asyncio.sleep(60)
-
-    async def restart_loop(self):
-        while True:
-            try:
-                now = datetime.datetime.now()
-                today = now.date()
-                restart_time = datetime.datetime.combine(today, datetime.time(hour=self.restart_time, minute=self.restart_minute))
-                
-                if self.last_restart_time and self.last_restart_time.date() == today:
-                    tomorrow = today + datetime.timedelta(days=1)
-                    restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
-                    print(f"Already restarted today at {self.last_restart_time}, scheduling next restart for {restart_time}")
-                elif now > restart_time:
-                    tomorrow = today + datetime.timedelta(days=1)
-                    restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
-
-                sleep_seconds = (restart_time - now).total_seconds()
-                print(f"Scheduling restart at {restart_time}, sleeping for {sleep_seconds} seconds")
-                await asyncio.sleep(sleep_seconds)
-
-                await self.restart_module()
-                await asyncio.sleep(60)
-            except Exception as e:
-                print(f"Restart loop error: {str(e)}, retrying in 60s")
-                await asyncio.sleep(60)
-
-    async def restart_module(self):
-        try:
-            print(f"Attempting to restart local-module-1 on demopi at {datetime.datetime.now()}")
-            opts = RobotClient.Options.with_api_key(
-                api_key=self.api_key,
-                api_key_id=self.api_key_id
-            )
-            robot = await RobotClient.at_address(
-                "demopi-main.4j0z3qgbzh.viam.cloud",
-                options=opts
-            )
-            await robot.restart_module("local-module-1")
-            self.last_restart_time = datetime.datetime.now()
-            print("Successfully restarted local-module-1 on demopi")
-            await robot.close()
-        except Exception as e:
-            print(f"Failed to restart module: {str(e)}")
 
     async def capture_image(self, now):
         if not self.camera:
@@ -307,8 +248,7 @@ class EmailImages(Sensor, EasyResource):
         return {
             "status": "running",
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": self.email_status,
-            "last_restart_time": str(self.last_restart_time) if self.last_restart_time else "None"
+            "email_status": self.email_status
         }
 
 async def main():
