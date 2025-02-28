@@ -53,6 +53,7 @@ class EmailImages(Sensor, EasyResource):
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
+        self.last_restart_time = None
         self.sent_this_hour = False
         self.email_status = "not_sent"
         self.capture_loop_task = None
@@ -151,7 +152,12 @@ class EmailImages(Sensor, EasyResource):
                 today = now.date()
                 restart_time = datetime.datetime.combine(today, datetime.time(hour=self.restart_time, minute=self.restart_minute))
                 
-                if now > restart_time:
+                # Skip if already restarted today
+                if self.last_restart_time and self.last_restart_time.date() == today:
+                    tomorrow = today + datetime.timedelta(days=1)
+                    restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
+                    print(f"Already restarted today at {self.last_restart_time}, scheduling next restart for {restart_time}")
+                elif now > restart_time:
                     tomorrow = today + datetime.timedelta(days=1)
                     restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
 
@@ -160,7 +166,7 @@ class EmailImages(Sensor, EasyResource):
                 await asyncio.sleep(sleep_seconds)
 
                 await self.restart_module()
-                # Brief sleep post-restart to avoid spamming restarts
+                # Brief sleep post-restart
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"Restart loop error: {str(e)}, retrying in 60s")
@@ -174,6 +180,7 @@ class EmailImages(Sensor, EasyResource):
                 DialOptions.with_api_key(api_key=self.api_key, api_key_id=self.api_key_id)
             )
             await robot.restart_module("local-module-1")
+            self.last_restart_time = datetime.datetime.now()
             print("Successfully restarted local-module-1 on demopi")
             await robot.close()
         except Exception as e:
@@ -298,7 +305,8 @@ class EmailImages(Sensor, EasyResource):
         return {
             "status": "running",
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": self.email_status
+            "email_status": self.email_status,
+            "last_restart_time": str(self.last_restart_time) if self.last_restart_time else "None"
         }
 
 async def main():
