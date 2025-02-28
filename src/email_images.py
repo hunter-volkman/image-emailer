@@ -135,7 +135,7 @@ class EmailImages(Sensor, EasyResource):
             try:
                 now = datetime.datetime.now()
                 today = now.date()
-                start_time, end_time = [int(t) for t in self.timeframe]
+                start_time, end_time = [int(float(t)) for t in self.timeframe]  # Convert floats to ints
                 if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
                     await self.capture_image(now)
                 if now.hour == self.send_time and not self.sent_this_hour:
@@ -152,7 +152,6 @@ class EmailImages(Sensor, EasyResource):
                 today = now.date()
                 restart_time = datetime.datetime.combine(today, datetime.time(hour=self.restart_time, minute=self.restart_minute))
                 
-                # Skip if already restarted today
                 if self.last_restart_time and self.last_restart_time.date() == today:
                     tomorrow = today + datetime.timedelta(days=1)
                     restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
@@ -166,7 +165,6 @@ class EmailImages(Sensor, EasyResource):
                 await asyncio.sleep(sleep_seconds)
 
                 await self.restart_module()
-                # Brief sleep post-restart
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"Restart loop error: {str(e)}, retrying in 60s")
