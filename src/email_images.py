@@ -17,6 +17,8 @@ from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import SensorReading, struct_to_dict
+from viam.robot.client import RobotClient
+from viam.rpc.dial import DialOptions
 from PIL import Image
 from io import BytesIO
 import functools
@@ -34,7 +36,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients"]
+        required = ["email", "password", "camera", "recipients", "api_key", "api_key_id"]
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
@@ -45,7 +47,7 @@ class EmailImages(Sensor, EasyResource):
         self.email = ""
         self.password = ""
         self.timeframe = [7, 20]  # 7 AM to 8 PM EST
-        self.send_time = 19       # 7 PM EST
+        self.send_time = 20       # 8 PM EST
         self.camera = None
         self.camera_name = ""
         self.recipients = []
@@ -53,7 +55,12 @@ class EmailImages(Sensor, EasyResource):
         self.last_capture_time = None
         self.sent_this_hour = False
         self.email_status = "not_sent"
-        self.loop_task = None
+        self.capture_loop_task = None
+        self.restart_loop_task = None
+        self.api_key = ""
+        self.api_key_id = ""
+        self.restart_time = 6     # 6 AM EST
+        self.restart_minute = 30  # 30 minutes past the hour
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
@@ -83,10 +90,14 @@ class EmailImages(Sensor, EasyResource):
         self.email = attributes["email"]
         self.password = attributes["password"]
         self.timeframe = attributes.get("timeframe", [7, 20])
-        self.send_time = attributes.get("send_time", 19)
+        self.send_time = attributes.get("send_time", 20)
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
+        self.api_key = attributes["api_key"]
+        self.api_key_id = attributes["api_key_id"]
+        self.restart_time = attributes.get("restart_time", 6)
+        self.restart_minute = attributes.get("restart_minute", 30)
         self.crop_top = attributes.get("crop_top", 0)
         self.crop_left = attributes.get("crop_left", 0)
         self.crop_width = attributes.get("crop_width", 0)
@@ -110,9 +121,13 @@ class EmailImages(Sensor, EasyResource):
             os.makedirs(self.base_dir)
         print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
 
-        if self.loop_task:
-            self.loop_task.cancel()
-        self.loop_task = asyncio.create_task(self.capture_loop())
+        if self.capture_loop_task:
+            self.capture_loop_task.cancel()
+        self.capture_loop_task = asyncio.create_task(self.capture_loop())
+
+        if self.restart_loop_task:
+            self.restart_loop_task.cancel()
+        self.restart_loop_task = asyncio.create_task(self.restart_loop())
 
     async def capture_loop(self):
         while True:
@@ -126,8 +141,43 @@ class EmailImages(Sensor, EasyResource):
                     await self.send_report(now)
                 await asyncio.sleep(60 - now.second)
             except Exception as e:
-                print(f"Loop error: {str(e)}, retrying in 60s")
+                print(f"Capture loop error: {str(e)}, retrying in 60s")
                 await asyncio.sleep(60)
+
+    async def restart_loop(self):
+        while True:
+            try:
+                now = datetime.datetime.now()
+                today = now.date()
+                restart_time = datetime.datetime.combine(today, datetime.time(hour=self.restart_time, minute=self.restart_minute))
+                
+                if now > restart_time:
+                    tomorrow = today + datetime.timedelta(days=1)
+                    restart_time = datetime.datetime.combine(tomorrow, datetime.time(hour=self.restart_time, minute=self.restart_minute))
+
+                sleep_seconds = (restart_time - now).total_seconds()
+                print(f"Scheduling restart at {restart_time}, sleeping for {sleep_seconds} seconds")
+                await asyncio.sleep(sleep_seconds)
+
+                await self.restart_module()
+                # Brief sleep post-restart to avoid spamming restarts
+                await asyncio.sleep(60)
+            except Exception as e:
+                print(f"Restart loop error: {str(e)}, retrying in 60s")
+                await asyncio.sleep(60)
+
+    async def restart_module(self):
+        try:
+            print(f"Attempting to restart local-module-1 on demopi at {datetime.datetime.now()}")
+            robot = await RobotClient.at_address(
+                "demopi-main.4j0z3qgbzh.viam.cloud",
+                DialOptions.with_api_key(api_key=self.api_key, api_key_id=self.api_key_id)
+            )
+            await robot.restart_module("local-module-1")
+            print("Successfully restarted local-module-1 on demopi")
+            await robot.close()
+        except Exception as e:
+            print(f"Failed to restart module: {str(e)}")
 
     async def capture_image(self, now):
         if not self.camera:
@@ -170,21 +220,7 @@ class EmailImages(Sensor, EasyResource):
             self.email_status = "no_images"
             return
 
-        # Option 1: All images, sorted chronologically
         images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-
-        # Option 2: One per hour (uncomment to use instead)
-        # images_by_hour = {}
-        # start_time, end_time = self.timeframe
-        # for img in all_images:
-        #     try:
-        #         hour = int(img.split('_')[2][0:2])
-        #         if start_time <= hour < end_time:
-        #             images_by_hour[hour] = img
-        #     except (ValueError, IndexError):
-        #         print(f"Skipping invalid filename: {img}")
-        # images_to_send = sorted(images_by_hour.values(), key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-
         try:
             print(f"Sending report with {len(images_to_send)} images at {now}")
             loop = asyncio.get_running_loop()
