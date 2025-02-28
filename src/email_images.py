@@ -91,15 +91,15 @@ class EmailImages(Sensor, EasyResource):
         self.email = attributes["email"]
         self.password = attributes["password"]
         self.timeframe = attributes.get("timeframe", [7, 20])
-        self.send_time = int(float(attributes.get("send_time", 20)))  # Convert float to int
+        self.send_time = int(float(attributes.get("send_time", 20)))
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
         self.api_key = attributes["api_key"]
         self.api_key_id = attributes["api_key_id"]
-        self.restart_time = int(float(attributes.get("restart_time", 6)))  # Convert float to int
-        self.restart_minute = int(float(attributes.get("restart_minute", 30)))  # Convert float to int
-        self.crop_top = int(float(attributes.get("crop_top", 0)))  # Ensure all numerics are ints
+        self.restart_time = int(float(attributes.get("restart_time", 6)))
+        self.restart_minute = int(float(attributes.get("restart_minute", 30)))
+        self.crop_top = int(float(attributes.get("crop_top", 0)))
         self.crop_left = int(float(attributes.get("crop_left", 0)))
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
@@ -135,7 +135,7 @@ class EmailImages(Sensor, EasyResource):
             try:
                 now = datetime.datetime.now()
                 today = now.date()
-                start_time, end_time = [int(float(t)) for t in self.timeframe]  # Convert floats to ints
+                start_time, end_time = [int(float(t)) for t in self.timeframe]
                 if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
                     await self.capture_image(now)
                 if now.hour == self.send_time and not self.sent_this_hour:
@@ -175,7 +175,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Attempting to restart local-module-1 on demopi at {datetime.datetime.now()}")
             robot = await RobotClient.at_address(
                 "demopi-main.4j0z3qgbzh.viam.cloud",
-                DialOptions.with_api_key(api_key=self.api_key, api_key_id=self.api_key_id)
+                DialOptions(credentials={"type": "api-key", "payload": self.api_key}, entity=self.api_key_id)
             )
             await robot.restart_module("local-module-1")
             self.last_restart_time = datetime.datetime.now()
