@@ -20,6 +20,10 @@ from viam.utils import SensorReading, struct_to_dict
 from PIL import Image
 from io import BytesIO
 import functools
+from viam.logging import getLogger
+
+# Set up Viam logger
+LOGGER = getLogger(__name__)
 
 class EmailImages(Sensor, EasyResource):
     MODEL: ClassVar[Model] = Model(ModelFamily("hunter", "sensor"), "image-emailer")
@@ -27,7 +31,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         sensor = cls(config)
-        print(f"Created new EmailImages instance for {config.name}")
+        LOGGER.info(f"Created new EmailImages instance for {config.name}")
         sensor.reconfigure(config, dependencies)
         return sensor
 
@@ -58,24 +62,24 @@ class EmailImages(Sensor, EasyResource):
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
-        print(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
+        LOGGER.info(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
 
     def _get_last_capture_time(self, daily_dir):
         if not os.path.exists(daily_dir):
-            print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
+            LOGGER.info(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
             return None
         images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
         if not images:
-            print(f"No valid images found in {daily_dir}, last_capture_time remains None")
+            LOGGER.info(f"No valid images found in {daily_dir}, last_capture_time remains None")
             return None
         latest = max(images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         timestamp_str = latest.split('_')[1] + "_" + latest.split('_')[2].split('.')[0]
         try:
             last_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
-            print(f"Found latest image {latest}, setting last_capture_time to {last_time}")
+            LOGGER.info(f"Found latest image {latest}, setting last_capture_time to {last_time}")
             return last_time
         except ValueError:
-            print(f"Invalid timestamp in {latest}, last_capture_time remains None")
+            LOGGER.info(f"Invalid timestamp in {latest}, last_capture_time remains None")
             return None
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
@@ -97,9 +101,9 @@ class EmailImages(Sensor, EasyResource):
         )
         self.camera = dependencies.get(camera_resource_name)
         if not self.camera:
-            print(f"Could not resolve camera: {self.camera_name}. Check configuration.")
+            LOGGER.error(f"Could not resolve camera: {self.camera_name}. Check configuration.")
         else:
-            print(f"Successfully resolved camera: {self.camera_name}")
+            LOGGER.info(f"Successfully resolved camera: {self.camera_name}")
 
         today = datetime.datetime.now().strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today)
@@ -108,7 +112,7 @@ class EmailImages(Sensor, EasyResource):
         self.email_status = "not_sent"
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
-        print(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
+        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
 
         if self.capture_loop_task:
             self.capture_loop_task.cancel()
@@ -126,15 +130,15 @@ class EmailImages(Sensor, EasyResource):
                     await self.send_report(now)
                 await asyncio.sleep(60 - now.second)
             except Exception as e:
-                print(f"Capture loop error: {str(e)}, retrying in 60s")
+                LOGGER.error(f"Capture loop error: {str(e)}, retrying in 60s")
                 await asyncio.sleep(60)
 
     async def capture_image(self, now):
         if not self.camera:
-            print(f"No camera at {now}")
+            LOGGER.error(f"No camera at {now}")
             return
         try:
-            print(f"Capturing image at {now}")
+            LOGGER.info(f"Capturing image at {now}")
             image = await self.camera.get_image()
             img = Image.open(BytesIO(image.data))
             crop_width = self.crop_width or img.width - self.crop_left
@@ -152,27 +156,27 @@ class EmailImages(Sensor, EasyResource):
             save_path = os.path.join(daily_dir, filename)
             cropped_img.save(save_path, "JPEG")
             self.last_capture_time = now
-            print(f"Saved image: {save_path}")
+            LOGGER.info(f"Saved image: {save_path}")
         except Exception as e:
-            print(f"Capture error at {now}: {str(e)}")
+            LOGGER.error(f"Capture error at {now}: {str(e)}")
 
     async def send_report(self, now):
         today_str = now.strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
-            print(f"No directory for {today_str}, skipping report")
+            LOGGER.info(f"No directory for {today_str}, skipping report")
             self.email_status = "no_images"
             return
 
         all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
         if not all_images:
-            print(f"No images for {today_str}, skipping report")
+            LOGGER.info(f"No images for {today_str}, skipping report")
             self.email_status = "no_images"
             return
 
         images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         try:
-            print(f"Sending report with {len(images_to_send)} images at {now}")
+            LOGGER.info(f"Sending report with {len(images_to_send)} images at {now}")
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
@@ -180,10 +184,10 @@ class EmailImages(Sensor, EasyResource):
             )
             self.sent_this_hour = True
             self.email_status = "sent"
-            print(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
+            LOGGER.info(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
             self.email_status = f"error: {str(e)}"
-            print(f"Email send error at {now}: {str(e)}")
+            LOGGER.error(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
         msg = MIMEMultipart()
@@ -208,7 +212,7 @@ class EmailImages(Sensor, EasyResource):
             smtp.starttls()
             smtp.login(self.email, self.password)
             smtp.send_message(msg)
-            print(f"Daily report sent to {msg['To']}")
+            LOGGER.info(f"Daily report sent to {msg['To']}")
 
     async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
         if command.get("command") == "send_email":
@@ -217,22 +221,22 @@ class EmailImages(Sensor, EasyResource):
                 timestamp = datetime.datetime.strptime(day, '%Y%m%d')
                 daily_dir = os.path.join(self.base_dir, day)
                 if not os.path.exists(daily_dir):
-                    print(f"No directory for {day}")
+                    LOGGER.info(f"No directory for {day}")
                     return {"status": f"No images directory for {day}"}
 
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
                 if not all_images:
-                    print(f"No images for {day}")
+                    LOGGER.info(f"No images for {day}")
                     return {"status": f"No images found for {day}"}
 
                 images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-                print(f"Manual send for {day} with {len(images_to_send)} images")
+                LOGGER.info(f"Manual send for {day} with {len(images_to_send)} images")
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
                     None,
                     functools.partial(self._send_daily_report_sync, images_to_send, timestamp, daily_dir)
                 )
-                print(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
+                LOGGER.info(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
                 return {"status": f"Sent email with {len(images_to_send)} images for {day}"}
             except ValueError:
                 return {"status": f"Invalid day format: {day}, use YYYYMMDD"}
@@ -242,7 +246,7 @@ class EmailImages(Sensor, EasyResource):
 
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         now = datetime.datetime.now()
-        print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
+        LOGGER.info(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
         if not self.camera:
             return {"error": "No camera available"}
         return {
