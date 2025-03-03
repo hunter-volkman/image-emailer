@@ -20,6 +20,8 @@ from viam.utils import SensorReading, struct_to_dict
 from PIL import Image
 from io import BytesIO
 import functools
+import json
+import fasteners
 
 class EmailImages(Sensor, EasyResource):
     MODEL: ClassVar[Model] = Model(ModelFamily("hunter", "sensor"), "image-emailer")
@@ -51,34 +53,62 @@ class EmailImages(Sensor, EasyResource):
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
-        self.sent_this_hour = False
+        self.last_sent_date = None
         self.email_status = "not_sent"
         self.capture_loop_task = None
         self.crop_top = 0
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
+        self.lock = asyncio.Lock()
+        self.process_lock = fasteners.InterProcessLock(os.path.join(self.base_dir, "lockfile"))
+        self.state_file = os.path.join(self.base_dir, "state.json")
+        self._load_state()
         print(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}")
 
+    def _load_state(self):
+        """Load last_sent_date and last_capture_time from state file if it exists."""
+        if os.path.exists(self.state_file):
+            with open(self.state_file, "r") as f:
+                state = json.load(f)
+                self.last_sent_date = state.get("last_sent_date")
+                self.last_capture_time = (datetime.datetime.fromisoformat(state["last_capture_time"])
+                                          if state.get("last_capture_time") else None)
+            print(f"Loaded state: last_sent_date={self.last_sent_date}, last_capture_time={self.last_capture_time}")
+        else:
+            print(f"No state file at {self.state_file}, using defaults")
+
+    def _save_state(self):
+        """Save last_sent_date and last_capture_time to state file."""
+        state = {
+            "last_sent_date": self.last_sent_date,
+            "last_capture_time": self.last_capture_time.isoformat() if self.last_capture_time else None
+        }
+        with open(self.state_file, "w") as f:
+            json.dump(state, f)
+        print(f"Saved state to {self.state_file}")
+
     def _get_last_capture_time(self, daily_dir):
+        """Retrieve the timestamp of the latest captured image in the daily directory."""
         if not os.path.exists(daily_dir):
-            print(f"No daily directory exists at {daily_dir}, last_capture_time remains None")
+            print(f"No daily directory exists at {daily_dir}")
             return None
         images = [f for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")]
         if not images:
-            print(f"No valid images found in {daily_dir}, last_capture_time remains None")
+            print(f"No valid images found in {daily_dir}")
             return None
         latest = max(images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         timestamp_str = latest.split('_')[1] + "_" + latest.split('_')[2].split('.')[0]
         try:
             last_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
-            print(f"Found latest image {latest}, setting last_capture_time to {last_time}")
+            print(f"Found latest image {latest}, last_capture_time={last_time}")
             return last_time
         except ValueError:
-            print(f"Invalid timestamp in {latest}, last_capture_time remains None")
+            print(f"Invalid timestamp in {latest}")
             return None
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
+        """Reconfigure the module with updated settings and ensure proper task management."""
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
@@ -103,8 +133,8 @@ class EmailImages(Sensor, EasyResource):
 
         today = datetime.datetime.now().strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today)
-        self.last_capture_time = self._get_last_capture_time(daily_dir)
-        self.sent_this_hour = False
+        if self.last_capture_time is None:  # Only load from disk if not set from state
+            self.last_capture_time = self._get_last_capture_time(daily_dir)
         self.email_status = "not_sent"
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -112,24 +142,37 @@ class EmailImages(Sensor, EasyResource):
 
         if self.capture_loop_task:
             self.capture_loop_task.cancel()
+            try:
+                asyncio.get_event_loop().run_until_complete(asyncio.wait_for(self.capture_loop_task, timeout=5))
+                print("Previous capture_loop_task cancelled successfully")
+            except asyncio.TimeoutError:
+                print("Warning: Previous capture_loop_task did not cancel within 5 seconds")
         self.capture_loop_task = asyncio.create_task(self.capture_loop())
 
     async def capture_loop(self):
-        while True:
-            try:
-                now = datetime.datetime.now()
-                today = now.date()
-                start_time, end_time = [int(float(t)) for t in self.timeframe]
-                if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
-                    await self.capture_image(now)
-                if now.hour == self.send_time and not self.sent_this_hour:
-                    await self.send_report(now)
-                await asyncio.sleep(60 - now.second)
-            except Exception as e:
-                print(f"Capture loop error: {str(e)}, retrying in 60s")
-                await asyncio.sleep(60)
+        """Main loop to capture images and send daily reports, synchronized across instances."""
+        with self.process_lock:
+            print("Process lock acquired, starting capture loop")
+            while True:
+                try:
+                    now = datetime.datetime.now()
+                    today_str = now.strftime("%Y%m%d")
+                    async with self.lock:
+                        start_time, end_time = [int(float(t)) for t in self.timeframe]
+                        if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
+                            await self.capture_image(now)
+                            self._save_state()
+                        if now.hour == self.send_time and self.last_sent_date != today_str:
+                            await self.send_report(now)
+                            self.last_sent_date = today_str
+                            self._save_state()
+                    await asyncio.sleep(60 - now.second + 0.1)  # Add jitter to prevent tight loops
+                except Exception as e:
+                    print(f"Capture loop error: {str(e)}, retrying in 60s")
+                    await asyncio.sleep(60)
 
     async def capture_image(self, now):
+        """Capture and save an image from the camera."""
         if not self.camera:
             print(f"No camera at {now}")
             return
@@ -157,6 +200,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Capture error at {now}: {str(e)}")
 
     async def send_report(self, now):
+        """Send a daily report with all images captured today."""
         today_str = now.strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
@@ -178,7 +222,6 @@ class EmailImages(Sensor, EasyResource):
                 None,
                 functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
             )
-            self.sent_this_hour = True
             self.email_status = "sent"
             print(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
@@ -186,6 +229,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
+        """Synchronous method to send the email with attachments."""
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
@@ -211,6 +255,7 @@ class EmailImages(Sensor, EasyResource):
             print(f"Daily report sent to {msg['To']}")
 
     async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
+        """Handle custom commands, such as manual email sending."""
         if command.get("command") == "send_email":
             day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
@@ -241,6 +286,7 @@ class EmailImages(Sensor, EasyResource):
         return {"status": "Unknown command"}
 
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
+        """Return the current status of the sensor."""
         now = datetime.datetime.now()
         print(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
         if not self.camera:
@@ -248,7 +294,8 @@ class EmailImages(Sensor, EasyResource):
         return {
             "status": "running",
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": self.email_status
+            "email_status": self.email_status,
+            "last_sent_date": self.last_sent_date if self.last_sent_date else "Never"
         }
 
 async def main():
