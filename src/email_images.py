@@ -34,6 +34,7 @@ class EmailImages(Sensor, EasyResource):
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         sensor = cls(config)
         LOGGER.info(f"Created new EmailImages instance for {config.name} with PID {os.getpid()}")
+        sensor._dependencies = dependencies  # Store dependencies for later use
         sensor.reconfigure(config, dependencies)
         return sensor
 
@@ -109,7 +110,8 @@ class EmailImages(Sensor, EasyResource):
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
 
-        # Lazy camera resolution - we'll connect when needed
+        # Update dependencies on reconfigure
+        self._dependencies = dependencies
         LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
 
         if not os.path.exists(self.base_dir):
@@ -282,7 +284,8 @@ class EmailImages(Sensor, EasyResource):
             "status": "running",
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
             "email_status": self.email_status,
-            "last_sent_date": self.last_sent_date if self.last_sent_date else "Never"
+            "last_sent_date": self.last_sent_date if self.last_sent_date else "Never",
+            "pid": os.getpid()  # Added PID to track the running process
         }
 
 async def main():
