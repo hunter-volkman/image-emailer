@@ -93,7 +93,7 @@ class EmailImages(Sensor, EasyResource):
         }
         with open(self.state_file, "w") as f:
             json.dump(state, f)
-        LOGGER.debug(f"Saved state to {self.state_file}")
+        LOGGER.info(f"Saved state to {self.state_file}")
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
         """Configure the module and start the scheduled loop."""
@@ -133,7 +133,7 @@ class EmailImages(Sensor, EasyResource):
                 now = datetime.datetime.now()
                 next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
                 sleep_seconds = (next_hour - now).total_seconds()
-                LOGGER.debug(f"Sleeping for {sleep_seconds:.0f} seconds until {next_hour}")
+                LOGGER.info(f"Sleeping for {sleep_seconds:.0f} seconds until {next_hour}")
                 await asyncio.sleep(sleep_seconds)
 
                 now = datetime.datetime.now()
