@@ -32,10 +32,10 @@ class EmailImages(Sensor, EasyResource):
     MODEL: ClassVar[Model] = Model(ModelFamily("hunter", "sensor"), "image-emailer")
 
     @classmethod
-    def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
+    async def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         sensor = cls(config)
         logger.info(f"Created new EmailImages instance for {config.name} with PID {os.getpid()}")
-        sensor.reconfigure(config, dependencies)
+        await sensor.reconfigure(config, dependencies)
         return sensor
 
     @classmethod
@@ -72,7 +72,6 @@ class EmailImages(Sensor, EasyResource):
         logger.info(f"Initialized with name: {self.name}, base_dir: {self.base_dir}, PID: {os.getpid()}")
 
     def _load_state(self):
-        """Load last_sent_date and last_capture_time from state file if it exists."""
         if os.path.exists(self.state_file):
             with open(self.state_file, "r") as f:
                 state = json.load(f)
@@ -84,7 +83,6 @@ class EmailImages(Sensor, EasyResource):
             logger.info(f"No state file at {self.state_file}, using defaults")
 
     def _save_state(self):
-        """Save last_sent_date and last_capture_time to state file."""
         state = {
             "last_sent_date": self.last_sent_date,
             "last_capture_time": self.last_capture_time.isoformat() if self.last_capture_time else None
@@ -94,7 +92,6 @@ class EmailImages(Sensor, EasyResource):
         logger.info(f"Saved state to {self.state_file}")
 
     def _get_last_capture_time(self, daily_dir):
-        """Retrieve the timestamp of the latest captured image in the daily directory."""
         if not os.path.exists(daily_dir):
             logger.info(f"No daily directory exists at {daily_dir}")
             return None
@@ -113,7 +110,6 @@ class EmailImages(Sensor, EasyResource):
             return None
 
     async def reconfigure(self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]):
-        """Reconfigure the module with updated settings and ensure proper task management."""
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
@@ -130,15 +126,20 @@ class EmailImages(Sensor, EasyResource):
         camera_resource_name = ResourceName(
             namespace="rdk", type="component", subtype="camera", name=self.camera_name
         )
-        self.camera = dependencies.get(camera_resource_name)
-        if not self.camera:
-            logger.error(f"Could not resolve camera: {self.camera_name}. Check configuration.")
+        # Retry camera resolution up to 5 times with delay
+        for attempt in range(5):
+            self.camera = dependencies.get(camera_resource_name)
+            if self.camera:
+                logger.info(f"Successfully resolved camera: {self.camera_name} on attempt {attempt + 1}")
+                break
+            logger.warning(f"Could not resolve camera: {self.camera_name} on attempt {attempt + 1}, retrying in 2s")
+            await asyncio.sleep(2)
         else:
-            logger.info(f"Successfully resolved camera: {self.camera_name}")
+            logger.error(f"Failed to resolve camera: {self.camera_name} after 5 attempts")
 
         today = datetime.datetime.now().strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today)
-        if self.last_capture_time is None:  # Only load from disk if not set from state
+        if self.last_capture_time is None:
             self.last_capture_time = self._get_last_capture_time(daily_dir)
         self.email_status = "not_sent"
         if not os.path.exists(self.base_dir):
@@ -155,7 +156,6 @@ class EmailImages(Sensor, EasyResource):
         self.capture_loop_task = asyncio.create_task(self.capture_loop())
 
     async def capture_loop(self):
-        """Main loop to capture images and send daily reports, synchronized across instances."""
         with self.process_lock:
             logger.info(f"Process lock acquired, starting capture loop, PID: {os.getpid()}")
             while True:
@@ -173,7 +173,7 @@ class EmailImages(Sensor, EasyResource):
                             await self.send_report(now)
                             self.last_sent_date = today_str
                             self._save_state()
-                    await asyncio.sleep(60 - now.second + 0.1)  # Add jitter
+                    await asyncio.sleep(60 - now.second + 0.1)
                 except asyncio.CancelledError:
                     logger.info("Capture loop cancelled")
                     raise
@@ -182,7 +182,6 @@ class EmailImages(Sensor, EasyResource):
                     await asyncio.sleep(60)
 
     async def capture_image(self, now):
-        """Capture and save an image from the camera."""
         if not self.camera:
             logger.error(f"No camera at {now}")
             return
@@ -210,7 +209,6 @@ class EmailImages(Sensor, EasyResource):
             logger.error(f"Capture error at {now}: {str(e)}")
 
     async def send_report(self, now):
-        """Send a daily report with all images captured today."""
         today_str = now.strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
@@ -239,7 +237,6 @@ class EmailImages(Sensor, EasyResource):
             logger.error(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
-        """Synchronous method to send the email with attachments."""
         msg = MIMEMultipart()
         msg["From"] = self.email
         msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
@@ -265,7 +262,6 @@ class EmailImages(Sensor, EasyResource):
             logger.info(f"Daily report sent to {msg['To']}")
 
     async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
-        """Handle custom commands, such as manual email sending."""
         if command.get("command") == "send_email":
             day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
@@ -296,7 +292,6 @@ class EmailImages(Sensor, EasyResource):
         return {"status": "Unknown command"}
 
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
-        """Return the current status of the sensor."""
         now = datetime.datetime.now()
         logger.info(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
         if not self.camera:
