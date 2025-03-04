@@ -140,8 +140,8 @@ class EmailImages(Sensor, EasyResource):
                 today_str = now.strftime("%Y%m%d")
                 start_time, end_time = self.timeframe
 
-                # Capture if within timeframe and new hour
-                if start_time <= now.hour < end_time and (self.last_capture_time is None or now.hour > self.last_capture_time.hour):
+                # Capture if within timeframe and now qualifies new capture time
+                if start_time <= now.hour < end_time and (self.last_capture_time is None or now > self.last_capture_time):
                     camera_resource_name = ResourceName(
                         namespace="rdk", type="component", subtype="camera", name=self.camera_name
                     )
