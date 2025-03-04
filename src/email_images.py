@@ -42,7 +42,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients"]
+        required = ["email", "password", "camera", "recipients", "location"]  # Added location as required
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
@@ -67,10 +67,11 @@ class EmailImages(Sensor, EasyResource):
         self.crop_width = 0
         self.crop_height = 0
         self.make_gif = False
+        self.location = ""
         self.state_file = os.path.join(self.base_dir, "state.json")
         self.lock_file = os.path.join(self.base_dir, "lockfile")
         self._load_state()
-        LOGGER.info(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}, PID: {os.getpid()}")
+        LOGGER.info(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}, PID: {os.getpid()}, location: {self.location}")
 
     def _load_state(self):
         """Load persistent state from file."""
@@ -112,10 +113,11 @@ class EmailImages(Sensor, EasyResource):
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
         self.make_gif = bool(attributes.get("make_gif", False))
+        self.location = attributes.get("location", "")
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
-        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, make_gif: {self.make_gif}")
+        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, make_gif: {self.make_gif}, location: {self.location}")
 
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -287,7 +289,7 @@ class EmailImages(Sensor, EasyResource):
         """Send the daily email report, optionally including a GIF if make_gif is enabled."""
         msg = MIMEMultipart("mixed")
         msg["From"] = self.email
-        msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
+        msg["Subject"] = f"Daily Report - {self.location} - {timestamp.strftime('%Y-%m-%d')}"  # Updated subject
         msg["To"] = ", ".join(self.recipients)
 
         # Create GIF if enabled
@@ -303,7 +305,7 @@ class EmailImages(Sensor, EasyResource):
         html_body = f"""
         <html>
           <body>
-            <p>Attached are {len(image_files)} inventory images from 389 5th Ave, New York, NY captured on {timestamp.strftime('%Y-%m-%d')}.</p>
+            <p>Attached are {len(image_files)} images from {self.location} captured on {timestamp.strftime('%Y-%m-%d')}, ordered from earliest to latest.</p>
         """
         if gif_path:
             html_body += '<p>Daily Summary GIF:</p><img src="cid:dailygif">'
