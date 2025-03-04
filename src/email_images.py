@@ -5,6 +5,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email import encoders
 from typing import Any, ClassVar, Mapping, Optional, Sequence
 from typing_extensions import Self
@@ -18,7 +19,7 @@ from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import SensorReading, struct_to_dict
 from viam.logging import getLogger
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import functools
 import json
@@ -65,6 +66,7 @@ class EmailImages(Sensor, EasyResource):
         self.crop_left = 0
         self.crop_width = 0
         self.crop_height = 0
+        self.make_gif = False
         self.state_file = os.path.join(self.base_dir, "state.json")
         self.lock_file = os.path.join(self.base_dir, "lockfile")
         self._load_state()
@@ -109,10 +111,11 @@ class EmailImages(Sensor, EasyResource):
         self.crop_left = int(float(attributes.get("crop_left", 0)))
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
+        self.make_gif = attributes.get("make_gif", False)
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
-        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}")
+        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, make_gif: {self.make_gif}")
 
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -152,7 +155,7 @@ class EmailImages(Sensor, EasyResource):
                         await self.capture_image(now)
                         self._save_state()
                     # Reset to avoid holding connection
-                    self.camera = None 
+                    self.camera = None
 
                 # Send email if it's send_time and not sent today
                 if now.hour == self.send_time and self.last_sent_date != today_str:
@@ -196,6 +199,64 @@ class EmailImages(Sensor, EasyResource):
                 else:
                     LOGGER.error(f"All capture attempts failed at {now}")
 
+    def annotate_image(self, image_path: str, font_path: Optional[str] = None, font_size: int = 20) -> Image.Image:
+        """Annotate an image with its timestamp in the bottom-right corner."""
+        img = Image.open(image_path)
+        draw = ImageDraw.Draw(img)
+
+        # Extract timestamp from filename 
+        # (e.g., image_20250304_090000_EST.jpg)
+        filename = os.path.basename(image_path)
+        try:
+            parts = filename.split('_')
+            if len(parts) >= 3:
+                # e.g., "090000"
+                time_str = parts[2]
+                formatted_time = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]} EST"
+            else:
+                formatted_time = "unknown"
+        except Exception:
+            formatted_time = "unknown"
+
+        # Load font (default to Arial if specified font fails)
+        try:
+            font = ImageFont.truetype(font_path if font_path else "arial.ttf", font_size)
+        except IOError:
+            font = ImageFont.load_default()
+            LOGGER.warning(f"Font {font_path or 'arial.ttf'} not found, using default")
+
+        # Position text in bottom-right with padding
+        text_bbox = draw.textbbox((0, 0), formatted_time, font=font)
+        text_width, text_height = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
+        x = img.width - text_width - 10
+        y = img.height - text_height - 10
+
+        # Semi-transparent black rectangle for readability
+        draw.rectangle([x-5, y-5, x+text_width+5, y+text_height+5], fill=(0, 0, 0, 128))
+        draw.text((x, y), formatted_time, fill="white", font=font)
+
+        return img
+
+    def create_daily_gif(self, daily_dir: str, frame_duration: int = 100, font_path: Optional[str] = None, font_size: int = 20) -> str:
+        """Create an animated GIF from daily images, saved as 'daily.gif'."""
+        image_files = sorted(
+            [os.path.join(daily_dir, f) for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")],
+            key=lambda x: os.path.basename(x).split('_')[2]
+        )
+        if not image_files:
+            LOGGER.warning(f"No images found in {daily_dir} for GIF creation")
+            raise ValueError("No images available for GIF")
+
+        frames = []
+        for image_path in image_files:
+            frame = self.annotate_image(image_path, font_path, font_size)
+            frames.append(frame.convert("P", palette=Image.ADAPTIVE))
+
+        gif_path = os.path.join(daily_dir, "daily.gif")
+        frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=frame_duration, loop=0)
+        LOGGER.info(f"Created daily GIF at {gif_path} with {len(frames)} frames")
+        return gif_path
+
     async def send_report(self, now):
         """Send a daily report with all captured images."""
         today_str = now.strftime('%Y%m%d')
@@ -225,29 +286,56 @@ class EmailImages(Sensor, EasyResource):
             LOGGER.error(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
-        msg = MIMEMultipart()
+        """Send the daily email report, optionally including a GIF if make_gif is enabled."""
+        msg = MIMEMultipart("mixed")
         msg["From"] = self.email
         msg["Subject"] = f"Daily Inventory Report - 389 5th Ave, New York, NY - {timestamp.strftime('%Y-%m-%d')}"
-        body = f"Attached are {len(image_files)} inventory images from the store at 389 5th Ave, New York, NY captured on {timestamp.strftime('%Y-%m-%d')}, ordered from earliest to latest."
-        msg.attach(MIMEText(body, "plain"))
         msg["To"] = ", ".join(self.recipients)
 
+        # Create GIF if enabled
+        gif_path = None
+        if self.make_gif:
+            try:
+                gif_path = self.create_daily_gif(daily_dir, frame_duration=100, font_path=None, font_size=20)
+            except Exception as e:
+                LOGGER.error(f"Failed to create GIF: {str(e)}")
+
+        # Build HTML body with optional GIF
+        related = MIMEMultipart("related")
+        html_body = f"""
+        <html>
+          <body>
+            <p>Attached are {len(image_files)} inventory images from 389 5th Ave, New York, NY captured on {timestamp.strftime('%Y-%m-%d')}.</p>
+        """
+        if gif_path:
+            html_body += '<p>Daily Summary GIF:</p><img src="cid:dailygif">'
+        html_body += "</body></html>"
+        related.attach(MIMEText(html_body, "html"))
+        msg.attach(related)
+
+        # Attach GIF inline if created
+        if gif_path and os.path.exists(gif_path):
+            with open(gif_path, "rb") as gif_file:
+                gif_part = MIMEImage(gif_file.read(), _subtype="gif")
+                gif_part.add_header("Content-ID", "<dailygif>")
+                gif_part.add_header("Content-Disposition", "inline", filename="daily.gif")
+                msg.attach(gif_part)
+
+        # Attach individual images
         for image_file in image_files:
             image_path = os.path.join(daily_dir, image_file)
             with open(image_path, "rb") as file:
                 attachment = MIMEBase("application", "octet-stream")
                 attachment.set_payload(file.read())
                 encoders.encode_base64(attachment)
-                attachment.add_header(
-                    "Content-Disposition", f"attachment; filename={image_file}"
-                )
+                attachment.add_header("Content-Disposition", f"attachment; filename={image_file}")
                 msg.attach(attachment)
 
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
             smtp.starttls()
             smtp.login(self.email, self.password)
             smtp.send_message(msg)
-            LOGGER.info(f"Daily report sent to {msg['To']}")
+            LOGGER.info(f"Daily report sent to {msg['To']}{' with GIF' if gif_path else ''}")
 
     async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
         if command.get("command") == "send_email":
