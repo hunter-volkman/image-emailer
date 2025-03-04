@@ -111,7 +111,7 @@ class EmailImages(Sensor, EasyResource):
         self.crop_left = int(float(attributes.get("crop_left", 0)))
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
-        self.make_gif = attributes.get("make_gif", False)
+        self.make_gif = bool(attributes.get("make_gif", False))
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
@@ -204,14 +204,12 @@ class EmailImages(Sensor, EasyResource):
         img = Image.open(image_path)
         draw = ImageDraw.Draw(img)
 
-        # Extract timestamp from filename 
-        # (e.g., image_20250304_090000_EST.jpg)
+        # Extract timestamp from filename (e.g., image_20250304_090000_EST.jpg)
         filename = os.path.basename(image_path)
         try:
             parts = filename.split('_')
             if len(parts) >= 3:
-                # e.g., "090000"
-                time_str = parts[2]
+                time_str = parts[2]  # e.g., "090000"
                 formatted_time = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]} EST"
             else:
                 formatted_time = "unknown"
@@ -374,7 +372,8 @@ class EmailImages(Sensor, EasyResource):
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "none",
             "report": self.report,
             "last_sent_date": self.last_sent_date if self.last_sent_date else "never",
-            "pid": os.getpid()
+            "pid": os.getpid(),
+            "gif": self.make_gif
         }
 
 async def main():
