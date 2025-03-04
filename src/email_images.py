@@ -24,7 +24,6 @@ import functools
 import json
 import fasteners
 
-# Viam logger setup
 LOGGER = getLogger(__name__)
 
 class EmailImages(Sensor, EasyResource):
@@ -34,7 +33,8 @@ class EmailImages(Sensor, EasyResource):
     def new(cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]) -> Self:
         sensor = cls(config)
         LOGGER.info(f"Created new EmailImages instance for {config.name} with PID {os.getpid()}")
-        sensor._dependencies = dependencies  # Store dependencies for later use
+        # Store dependencies for later use
+        sensor._dependencies = dependencies
         sensor.reconfigure(config, dependencies)
         return sensor
 
@@ -51,15 +51,15 @@ class EmailImages(Sensor, EasyResource):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.timeframe = [7, 20]  # 7 AM to 8 PM EST
-        self.send_time = 20       # 8 PM EST
+        self.timeframe = [7, 20]
+        self.send_time = 20
         self.camera = None
         self.camera_name = ""
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
         self.last_capture_time = None
         self.last_sent_date = None
-        self.email_status = "not_sent"
+        self.report = "not_sent"
         self.capture_loop_task = None
         self.crop_top = 0
         self.crop_left = 0
@@ -151,7 +151,8 @@ class EmailImages(Sensor, EasyResource):
                     else:
                         await self.capture_image(now)
                         self._save_state()
-                    self.camera = None  # Reset to avoid holding connection
+                    # Reset to avoid holding connection
+                    self.camera = None 
 
                 # Send email if it's send_time and not sent today
                 if now.hour == self.send_time and self.last_sent_date != today_str:
@@ -201,13 +202,13 @@ class EmailImages(Sensor, EasyResource):
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
             LOGGER.info(f"No directory for {today_str}, skipping report")
-            self.email_status = "no_images"
+            self.report = "no_images"
             return
 
         all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
         if not all_images:
             LOGGER.info(f"No images for {today_str}, skipping report")
-            self.email_status = "no_images"
+            self.report = "no_images"
             return
 
         images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
@@ -217,10 +218,10 @@ class EmailImages(Sensor, EasyResource):
                 None,
                 functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
             )
-            self.email_status = "sent"
+            self.report = "sent"
             LOGGER.info(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
-            self.email_status = f"error: {str(e)}"
+            self.report = f"error: {str(e)}"
             LOGGER.error(f"Email send error at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
@@ -282,10 +283,10 @@ class EmailImages(Sensor, EasyResource):
         LOGGER.info(f"get_readings called for {self.name} at EST {now.strftime('%H:%M:%S')}")
         return {
             "status": "running",
-            "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "None",
-            "email_status": self.email_status,
-            "last_sent_date": self.last_sent_date if self.last_sent_date else "Never",
-            "pid": os.getpid()  # Added PID to track the running process
+            "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "none",
+            "report": self.report,
+            "last_sent_date": self.last_sent_date if self.last_sent_date else "never",
+            "pid": os.getpid()
         }
 
 async def main():
