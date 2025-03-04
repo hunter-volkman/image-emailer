@@ -375,7 +375,8 @@ class EmailImages(Sensor, EasyResource):
             "report": self.report,
             "last_sent_date": self.last_sent_date if self.last_sent_date else "never",
             "pid": os.getpid(),
-            "gif": self.make_gif
+            "gif": self.make_gif,
+            "location": self.location
         }
 
 async def main():
