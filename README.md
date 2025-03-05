@@ -1,10 +1,10 @@
 # Module image-emailer
 
-This module enables a Raspberry Pi to autonomously capture images from a remote camera, process them (cropping to focus on a shelf), and email a daily report. It now supports an optional animated GIF generation from the day’s images and requires a location identifier for improved report context. The module connects to a store’s Viam machine and resumes capturing after power cycles by using a persisted state file. It operates without needing the Viam app’s CONTROL tab open.
+This module enables a Raspberry Pi to autonomously capture images from a remote camera, process them (cropping to focus on a shelf), and email a daily report with optional animated GIF generation. It requires a location identifier for report context and connects to a store’s Viam machine. The module persists its state to resume after power cycles or restarts and operates independently of the Viam app’s CONTROL tab. A daily `viam-agent` restart ensures predictable behavior despite updates or connection issues.
 
 ## Model `hunter:sensor:image-emailer`
 
-A custom sensor component that autonomously captures images from a remote camera, processes them (cropping and optionally creating an animated GIF), and sends a daily email report. Running locally on a Raspberry Pi, it connects to a store’s Viam machine and functions independently once configured.
+A custom sensor component that captures images from a remote camera at specified times, processes them (cropping and optionally creating a GIF), and sends a daily email report. It runs locally on a Raspberry Pi, connects to a store’s Viam machine, and uses a scheduled loop with inter-process locking for reliability.
 
 ### Configuration
 
@@ -15,9 +15,9 @@ Configure the model using the following JSON template in your Viam robot configu
   "email": "<string>",
   "password": "<string>",
   "camera": "<string>",
-  "timeframe": [<int>, <int>],
+  "capture_times": ["<string>", "<string>"],
   "recipients": ["<string>", "<string>"],
-  "send_time": <int>,
+  "send_time": "<string>",
   "save_dir": "<string>",
   "crop_top": <int>,
   "crop_left": <int>,
@@ -26,7 +26,6 @@ Configure the model using the following JSON template in your Viam robot configu
   "location": "<string>",
   "make_gif": <boolean>
 }
-
 ```
 
 #### Attributes
@@ -36,17 +35,17 @@ Configure the model using the following JSON template in your Viam robot configu
 |---------------|--------|-----------|----------------------------|
 | `email` | string  | Required  | GMail address for sending emails. |
 | `password` | string | Required  | GMail App Password for authentication (generate via Google Account settings). |
-| `camera` | string | Required  | Name of the remote camera (e.g., "remote:camera"). |
-| `timeframe` | list of int | Optional  | Start and end hours in EST for image captures. Defaults to `[6, 20]` (6 AM to 8 PM). |
-| `recipients` | int | Optional  |Email addresses to receive the daily report. |
-| `send_time` | int | Optional  | Hour in EST (0-23) to send the daily email report. Defaults to 20 (8 PM). |
-| `save_dir` | string | Optional  | Directory to save images locally. |
+| `camera` | string | Required  | Name of the remote camera (e.g., "remote-1:ffmpeg"). |
+| `capture_times` | list of int | Optional  | Times in EST (`"HH:MM"`) for image captures (e.g., `["7:00", "7:15"]`). Defaults to hourly from 7:00 to 19:00. |
+| `recipients` | int | Optional  | Email addresses to receive the daily report. |
+| `send_time` | int | Optional  | Time in EST (`"HH:MM"`) to send the daily report (e.g., `"20:00"`). Defaults to `"20:00"`. |
+| `save_dir` | string | Optional  | Directory to save images (e.g., `"/home/hunter.volkman/images"`). |
 | `crop_top` | int | Optional  | Top pixel coordinate for cropping. Defaults to 0 (no cropping from the top). |
 | `crop_left` | int | Optional  | Left pixel coordinate for cropping. Defaults to 0 (no cropping from the left). |
 | `crop_width` | int | Optional  | Width of the crop region. Defaults to 0 (full width if 0). |
 | `crop_height` | int | Optional  | Height of the crop region. Defaults to 0 (full height if 0). |
-| `location` | string | Required  | Identifier for the store or monitoring site; used in the email subject for clarity. |
-| `make_gif` | boolean | Optional  | Flag to enable creation of a daily animated GIF from the captured images. Defaults to false. |
+| `location` | string | Required  | Identifier for the location or monitoring site; used in the email subject and body for clarity. Defaults to `""`. |
+| `make_gif` | boolean | Optional  | Enable creation of a daily animated GIF. Defaults to `false`. |
 
 
 #### Example Configuration
@@ -56,14 +55,14 @@ Configure the model using the following JSON template in your Viam robot configu
   "email": "user@example.com",
   "password": "your-app-password",
   "camera": "remote:camera",
-  "timeframe": [7, 20],
+  "capture_times": ["7:00", "7:05", "7:10", "7:15", "7:20"],
   "recipients": ["recipient1@example.com", "recipient2@example.com"],
   "send_time": 20,
-  "save_dir": "/home/hunter.volkman/images",
-  "crop_top": 100,
-  "crop_left": 100,
-  "crop_width": 400,
-  "crop_height": 300,
+  "save_dir": "/home/user.name/images",
+  "crop_top": 0,
+  "crop_left": 0,
+  "crop_width": 0,
+  "crop_height": 0,
   "location": "Test Location",
   "make_gif": true
 }
