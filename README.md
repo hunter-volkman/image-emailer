@@ -1,10 +1,10 @@
 # Module image-emailer
 
-This module enables a Raspberry Pi to connect to a remote Viam machine, capture images hourly from a camera during specified operating hours (default 7 AM to 8 PM EST), crop them to focus on a shelf, and email a daily report at a configurable time (default 7 PM EST). Designed for monitoring stock levels, it runs autonomously without requiring the Viam app’s CONTROL tab open, resuming captures after power cycles using the last image’s timestamp. Ideal for reliable shelf monitoring and development testing.
+This module enables a Raspberry Pi to autonomously capture images from a remote camera, process them (cropping to focus on a shelf), and email a daily report. It now supports an optional animated GIF generation from the day’s images and requires a location identifier for improved report context. The module connects to a store’s Viam machine and resumes capturing after power cycles by using a persisted state file. It operates without needing the Viam app’s CONTROL tab open.
 
 ## Model `hunter:sensor:image-emailer`
 
-A custom sensor component that autonomously captures images from a remote camera, processes them, and sends a daily email report. It operates locally on a Raspberry Pi, connects to a store’s Viam machine, and runs independently of external triggers once configured.
+A custom sensor component that autonomously captures images from a remote camera, processes them (cropping and optionally creating an animated GIF), and sends a daily email report. Running locally on a Raspberry Pi, it connects to a store’s Viam machine and functions independently once configured.
 
 ### Configuration
 
@@ -22,27 +22,31 @@ Configure the model using the following JSON template in your Viam robot configu
   "crop_top": <int>,
   "crop_left": <int>,
   "crop_width": <int>,
-  "crop_height": <int>
+  "crop_height": <int>,
+  "location": "<string>",
+  "make_gif": <boolean>
 }
+
 ```
 
 #### Attributes
 
-The following attributes are available for this model:
 
 | Name          | Type   | Inclusion | Description                |
 |---------------|--------|-----------|----------------------------|
-| `email` | string  | Required  | GMail address for sending emails |
-| `password` | string | Required  | GMail App Password for authentication (generate via Google Account settings) |
-| `camera` | string | Required  | Name of the remote camera (e.g., "remote.camera") |
-| `timeframe` | list of int | Optional  | Start and end hours in EST for captures (e.g., [7, 19] for 7 AM-7 PM) |
-| `recipients` | int | Optional  | Email addresses to receive the report |
-| `send_time` | int | Optional  | Hour in EST (0-23) to send the daily email (default: 19, i.e., 7 PM) |
-| `save_dir` | string | Optional  | Directory to save images locally |
-| `crop_top` | int | Optional  | Top pixel coordinate for cropping (default: 0, full height) |
-| `crop_left` | int | Optional  | Left pixel coordinate for cropping (default: 0, full width) |
-| `crop_width` | int | Optional  | Width of the crop region (default: 0, full width) |
-| `crop_height` | int | Optional  | Height of the crop region (default: 0, full height) |
+| `email` | string  | Required  | GMail address for sending emails. |
+| `password` | string | Required  | GMail App Password for authentication (generate via Google Account settings). |
+| `camera` | string | Required  | Name of the remote camera (e.g., "remote:camera"). |
+| `timeframe` | list of int | Optional  | Start and end hours in EST for image captures. Defaults to `[6, 20]` (6 AM to 8 PM). |
+| `recipients` | int | Optional  |Email addresses to receive the daily report. |
+| `send_time` | int | Optional  | Hour in EST (0-23) to send the daily email report. Defaults to 20 (8 PM). |
+| `save_dir` | string | Optional  | Directory to save images locally. |
+| `crop_top` | int | Optional  | Top pixel coordinate for cropping. Defaults to 0 (no cropping from the top). |
+| `crop_left` | int | Optional  | Left pixel coordinate for cropping. Defaults to 0 (no cropping from the left). |
+| `crop_width` | int | Optional  | Width of the crop region. Defaults to 0 (full width if 0). |
+| `crop_height` | int | Optional  | Height of the crop region. Defaults to 0 (full height if 0). |
+| `location` | string | Required  | Identifier for the store or monitoring site; used in the email subject for clarity. |
+| `make_gif` | boolean | Optional  | Flag to enable creation of a daily animated GIF from the captured images. Defaults to false. |
 
 
 #### Example Configuration
@@ -52,61 +56,80 @@ The following attributes are available for this model:
   "email": "user@example.com",
   "password": "your-app-password",
   "camera": "remote:camera",
-  "timeframe": [7, 19],
+  "timeframe": [7, 20],
   "recipients": ["recipient1@example.com", "recipient2@example.com"],
-  "send_time": 19,
-  "save_dir": "/home/user/images",
+  "send_time": 20,
+  "save_dir": "/home/hunter.volkman/images",
   "crop_top": 100,
   "crop_left": 100,
   "crop_width": 400,
-  "crop_height": 300
+  "crop_height": 300,
+  "location": "Store A",
+  "make_gif": true
 }
 ```
 
 ### Setup Instructions
 
 1. **Install Dependencies**: Run `./setup.sh` to create a virtual environment and install requirements (`viam-sdk`, `pillow`, `typing-extensions`).
-2. **Configure Remote Part**: On the Raspberry Pi, add the store's Viam machine as a remote part named "remote" via the Viam app’s CONFIGURE tab.
+2. **Configure Remote Part**: On the Raspberry Pi, add the store's Viam machine as a remote part named `"remote"` via the Viam app’s CONFIGURE tab.
 3. **Run the Module**: Execute `./run.sh` to start the module.
 4. **Test Configuration**:
-* Ensure the `camera` name matches the remote part’s camera (e.g., "remote:camera").
+* Ensure the `camera` name matches the remote part’s camera (e.g., `"remote:camera"`).
 * Adjust `crop_*` parameters to focus on the shelf.
 * Set `send_time` to a near hour (e.g., 10 for 10:00 AM EST) for testing emails during development.
 
 
 ### Notes
-* **Capture Logic**: Captures images hourly at the start of each hour (e.g., 7:00, 8:00 AM EST) within `timeframe`. On power-up, it uses the latest image’s timestamp from `save_dir/YYYYMMDD` to resume at the next hour.
-* **Image Storage**: Images are saved in daily subdirectories (e.g., `/home/hunter.volkman/images/20250225`) and never deleted—adjust `save_dir` for persistent storage.
-* **Email Report**: Sends one report per `send_time` hour with the latest image per hour captured that day.
-* **Power Cycles**: Automatically resumes capturing at the next hour after restart, based on the last saved image’s timestamp.
-* **Development Mode**: Adjust `send_time` in the config and restart the module to test emails at different hours.
+* **Capture Logic**: The module captures images hourly at the start of each hour (e.g., 7:00, 8:00 AM EST) within the defined`timeframe`. On power-up, it reads the last capture timestamp from the persistent state file (saved as `state.json` in the `save_di`r) to resume at the correct time.
+* **Image Storage**: Captured images are saved in daily subdirectories (e.g., `/home/hunter.volkman/images/20250225`) and are preserved until manually managed.
+* **Email Report**: At the hour specified by `send_time` (default 8 PM EST), the module sends a daily report that:
+    * Attaches each captured image from that day.
+    * Optionally creates and attaches an inline animated GIF (if `make_gif` is enabled).
+    * Uses the `location` attribute in the email subject (e.g., "Daily Report - Location - 2025-03-05").
+* **Power Cycles**: The module persists its state (last capture time and last sent date) in a `state.json` file, ensuring that captures resume correctly after a restart.
+* **Asynchronous Scheduling and Locking**: A scheduled loop wakes at the start of each hour and uses an inter-process lock (via a lock file) to prevent duplicate runs.
 
 ### Example Logs
 
 On restart:
 ```text
-Reconfigured sensor-1 with base_dir: /home/hunter.volkman/images, last_capture_time: 2025-02-25 09:19:57
+Reconfigured sensor-1 with base_dir: /home/hunter.volkman/images, last_capture_time: 2025-03-05 07:15:30, make_gif: True, location: Test Location
 ```
 
 During capture:
 ```text
-get_readings called for sensor-1 at EST 10:00:05, hour: 10
-Checking timeframe [7.0, 19.0]
-Last capture time: 2025-02-25 09:19:57, last_hour: 9, next_hour: 10
-Saved image: /home/hunter.volkman/images/20250225/image_20250225_100005_EST.jpg for hour 10
+get_readings called for sensor-1 at EST 10:00:05
+Saved image: /home/hunter.volkman/images/20250305/image_20250305_100005_EST.jpg
 ```
 
 ### DoCommand
 
-If your model implements DoCommand, provide an example payload of each command that is supported and the arguments that can be used. If your model does not implement DoCommand, remove this section.
+The module supports two commands via the do_command interface for manual operations:
 
-#### Example DoCommand
+**Send Email Command**
+Manually trigger the email report for a specific day.
 
+Payload example:
 ```json
 {
-  "command_name": {
-    "arg1": "foo",
-    "arg2": 1
-  }
+  "command": "send_email",
+  "day": "20250305"
 }
 ```
+
+This command sends the report for the specified day (format: YYYYMMDD) if images exist for that date.
+
+**Create GIF Command**
+
+Manually create an animated GIF from the captured images of a specific day.
+
+Payload exmaple:
+```json
+{
+  "command": "create_gif",
+  "day": "20250305"
+}
+```
+
+This command creates a GIF from the day’s images and returns its storage path.
