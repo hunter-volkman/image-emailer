@@ -234,7 +234,6 @@ class EmailImages(Sensor, EasyResource):
         # Semi-transparent black rectangle for readability
         draw.rectangle([x-5, y-5, x+text_width+5, y+text_height+5], fill=(0, 0, 0, 128))
         draw.text((x, y), formatted_time, fill="white", font=font)
-
         return img
 
     def create_daily_gif(self, daily_dir: str, frame_duration: int = 100, font_path: Optional[str] = None, font_size: int = 20) -> str:
@@ -289,7 +288,7 @@ class EmailImages(Sensor, EasyResource):
         """Send the daily email report, optionally including a GIF if make_gif is enabled."""
         msg = MIMEMultipart("mixed")
         msg["From"] = self.email
-        msg["Subject"] = f"Daily Report - {self.location} - {timestamp.strftime('%Y-%m-%d')}"  # Updated subject
+        msg["Subject"] = f"Daily Report - {self.location} - {timestamp.strftime('%Y-%m-%d')}"
         msg["To"] = ", ".join(self.recipients)
 
         # Create GIF if enabled
@@ -364,6 +363,33 @@ class EmailImages(Sensor, EasyResource):
                 return {"status": f"Invalid day format: {day}, use YYYYMMDD"}
             except Exception as e:
                 return {"status": f"Error sending email: {str(e)}"}
+        
+        elif command.get("command") == "create_gif":
+            day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
+            try:
+                # Parse the day to ensure it's valid, though we don’t need timestamp for GIF
+                datetime.datetime.strptime(day, '%Y%m%d')
+                daily_dir = os.path.join(self.base_dir, day)
+                if not os.path.exists(daily_dir):
+                    LOGGER.info(f"No directory for {day}")
+                    return {"status": f"No images directory for {day}"}
+
+                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
+                if not all_images:
+                    LOGGER.info(f"No images for {day}")
+                    return {"status": f"No images found for {day}"}
+
+                LOGGER.info(f"Creating GIF for {day} with {len(all_images)} images")
+                gif_path = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    functools.partial(self.create_daily_gif, daily_dir)
+                )
+                return {"status": f"Created GIF for {day} at {gif_path}"}
+            except ValueError:
+                return {"status": f"Invalid day format: {day}, use YYYYMMDD"}
+            except Exception as e:
+                return {"status": f"Error creating GIF: {str(e)}"}
+
         return {"status": "Unknown command"}
 
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
