@@ -46,13 +46,20 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
+        # Validate capture_times
+        capture_times = attributes.get("capture_times", ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"])
+        for time_str in capture_times:
+            try:
+                datetime.datetime.strptime(time_str, "%H:%M")
+            except ValueError:
+                raise Exception(f"Invalid capture_times entry '{time_str}': must be in 'HH:MM' format")
         return [attributes["camera"]]
 
     def __init__(self, config: ComponentConfig):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.timeframe = [7, 20]
+        self.capture_times = ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"]
         self.send_time = 20
         self.camera = None
         self.camera_name = ""
@@ -103,7 +110,7 @@ class EmailImages(Sensor, EasyResource):
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
-        self.timeframe = attributes.get("timeframe", [7, 20])
+        self.capture_times = attributes.get("capture_times", ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"])
         self.send_time = int(float(attributes.get("send_time", 20)))
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
@@ -117,7 +124,7 @@ class EmailImages(Sensor, EasyResource):
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
-        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, make_gif: {self.make_gif}, location: {self.location}")
+        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, capture_times: {self.capture_times}, make_gif: {self.make_gif}, location: {self.location}")
 
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -126,8 +133,25 @@ class EmailImages(Sensor, EasyResource):
             self.capture_loop_task.cancel()
         self.capture_loop_task = asyncio.create_task(self.run_scheduled_loop())
 
+    def _get_next_capture_time(self, now: datetime.datetime) -> datetime.datetime:
+        """Calculate the next capture time based on current time and capture_times list."""
+        today = now.date()
+        capture_datetimes = [
+            datetime.datetime.combine(today, datetime.datetime.strptime(t, "%H:%M").time())
+            for t in self.capture_times
+        ]
+        
+        # Find the next capture time after now
+        for capture_dt in sorted(capture_datetimes):
+            if capture_dt > now:
+                return capture_dt
+        
+        # If all times are past, move to the first time tomorrow
+        tomorrow = today + datetime.timedelta(days=1)
+        return datetime.datetime.combine(tomorrow, datetime.datetime.strptime(self.capture_times[0], "%H:%M").time())
+
     async def run_scheduled_loop(self):
-        """Run a scheduled loop waking up at the start of each hour."""
+        """Run a scheduled loop that wakes up for specific capture times and send_time."""
         lock = fasteners.InterProcessLock(self.lock_file)
         if not lock.acquire(blocking=False):
             LOGGER.info(f"Another instance already running (PID {os.getpid()}), exiting")
@@ -136,17 +160,26 @@ class EmailImages(Sensor, EasyResource):
             LOGGER.info(f"Started scheduled loop with PID {os.getpid()}")
             while True:
                 now = datetime.datetime.now()
-                next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-                sleep_seconds = (next_hour - now).total_seconds()
-                LOGGER.info(f"Sleeping for {sleep_seconds:.0f} seconds until {next_hour}")
+                today_str = now.strftime("%Y%m%d")
+
+                # Determine next capture time
+                next_capture = self._get_next_capture_time(now)
+                sleep_until_capture = (next_capture - now).total_seconds()
+
+                # Determine next send time (today or tomorrow)
+                send_time_today = now.replace(hour=self.send_time, minute=0, second=0, microsecond=0)
+                if now > send_time_today:
+                    send_time_today += datetime.timedelta(days=1)
+                sleep_until_send = (send_time_today - now).total_seconds()
+
+                # Sleep until the earliest event
+                sleep_seconds = min(sleep_until_capture, sleep_until_send)
+                LOGGER.info(f"Sleeping for {sleep_seconds:.0f} seconds until {min(next_capture, send_time_today)}")
                 await asyncio.sleep(sleep_seconds)
 
                 now = datetime.datetime.now()
-                today_str = now.strftime("%Y%m%d")
-                start_time, end_time = self.timeframe
-
-                # Capture if within timeframe and now qualifies new capture time
-                if start_time <= now.hour < end_time and (self.last_capture_time is None or now > self.last_capture_time):
+                # Check if it's time to capture
+                if now >= next_capture and (self.last_capture_time is None or now > self.last_capture_time):
                     camera_resource_name = ResourceName(
                         namespace="rdk", type="component", subtype="camera", name=self.camera_name
                     )
@@ -156,14 +189,14 @@ class EmailImages(Sensor, EasyResource):
                     else:
                         await self.capture_image(now)
                         self._save_state()
-                    # Reset to avoid holding connection
                     self.camera = None
 
-                # Send email if it's send_time and not sent today
+                # Check if it's time to send the report
                 if now.hour == self.send_time and self.last_sent_date != today_str:
                     await self.send_report(now)
                     self.last_sent_date = today_str
                     self._save_state()
+
         except Exception as e:
             LOGGER.error(f"Scheduled loop failed: {str(e)}")
         finally:
