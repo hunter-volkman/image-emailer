@@ -307,7 +307,7 @@ class EmailImages(Sensor, EasyResource):
             <p>Attached are {len(image_files)} images from {self.location} captured on {timestamp.strftime('%Y-%m-%d')}, ordered from earliest to latest.</p>
         """
         if gif_path:
-            html_body += '<p>Daily Summary GIF:</p><img src="cid:dailygif">'
+            html_body += '<p>Daily GIF:</p><img src="cid:dailygif">'
         html_body += "</body></html>"
         related.attach(MIMEText(html_body, "html"))
         msg.attach(related)
