@@ -64,7 +64,7 @@ Configure the model using the following JSON template in your Viam robot configu
   "crop_left": 100,
   "crop_width": 400,
   "crop_height": 300,
-  "location": "Store A",
+  "location": "Test Location",
   "make_gif": true
 }
 ```
