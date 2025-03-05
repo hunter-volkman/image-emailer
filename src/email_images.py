@@ -42,7 +42,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients", "location"]  # Added location as required
+        required = ["email", "password", "camera", "recipients", "location"]
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
@@ -53,6 +53,12 @@ class EmailImages(Sensor, EasyResource):
                 datetime.datetime.strptime(time_str, "%H:%M")
             except ValueError:
                 raise Exception(f"Invalid capture_times entry '{time_str}': must be in 'HH:MM' format")
+        # Validate send_time
+        send_time = attributes.get("send_time", "20:00")
+        try:
+            datetime.datetime.strptime(str(send_time), "%H:%M")
+        except ValueError:
+            raise Exception(f"Invalid send_time '{send_time}': must be in 'HH:MM' format")
         return [attributes["camera"]]
 
     def __init__(self, config: ComponentConfig):
@@ -60,7 +66,7 @@ class EmailImages(Sensor, EasyResource):
         self.email = ""
         self.password = ""
         self.capture_times = ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"]
-        self.send_time = 20
+        self.send_time = "20:00"
         self.camera = None
         self.camera_name = ""
         self.recipients = []
@@ -111,7 +117,7 @@ class EmailImages(Sensor, EasyResource):
         self.email = attributes["email"]
         self.password = attributes["password"]
         self.capture_times = attributes.get("capture_times", ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"])
-        self.send_time = int(float(attributes.get("send_time", 20)))
+        self.send_time = attributes.get("send_time", "20:00")  # Now a string
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
@@ -121,8 +127,7 @@ class EmailImages(Sensor, EasyResource):
         self.crop_height = int(float(attributes.get("crop_height", 0)))
         self.make_gif = bool(attributes.get("make_gif", False))
         self.location = attributes.get("location", "")
-
-        # Update dependencies on reconfigure
+        # Get dependencies on reconfigure
         self._dependencies = dependencies
         LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, capture_times: {self.capture_times}, make_gif: {self.make_gif}, location: {self.location}")
 
@@ -141,14 +146,21 @@ class EmailImages(Sensor, EasyResource):
             for t in self.capture_times
         ]
         
-        # Find the next capture time after now
+        # Find the next capture datetime after now
         for capture_dt in sorted(capture_datetimes):
             if capture_dt > now:
                 return capture_dt
         
-        # If all times are past, move to the first time tomorrow
         tomorrow = today + datetime.timedelta(days=1)
         return datetime.datetime.combine(tomorrow, datetime.datetime.strptime(self.capture_times[0], "%H:%M").time())
+
+    def _get_next_send_time(self, now: datetime.datetime) -> datetime.datetime:
+        """Calculate the next send time based on current time and send_time."""
+        today = now.date()
+        send_time_dt = datetime.datetime.combine(today, datetime.datetime.strptime(self.send_time, "%H:%M").time())
+        if now > send_time_dt:
+            send_time_dt += datetime.timedelta(days=1)
+        return send_time_dt
 
     async def run_scheduled_loop(self):
         """Run a scheduled loop that wakes up for specific capture times and send_time."""
@@ -166,15 +178,13 @@ class EmailImages(Sensor, EasyResource):
                 next_capture = self._get_next_capture_time(now)
                 sleep_until_capture = (next_capture - now).total_seconds()
 
-                # Determine next send time (today or tomorrow)
-                send_time_today = now.replace(hour=self.send_time, minute=0, second=0, microsecond=0)
-                if now > send_time_today:
-                    send_time_today += datetime.timedelta(days=1)
-                sleep_until_send = (send_time_today - now).total_seconds()
+                # Determine next send time
+                next_send = self._get_next_send_time(now)
+                sleep_until_send = (next_send - now).total_seconds()
 
                 # Sleep until the earliest event
                 sleep_seconds = min(sleep_until_capture, sleep_until_send)
-                LOGGER.info(f"Sleeping for {sleep_seconds:.0f} seconds until {min(next_capture, send_time_today)}")
+                LOGGER.info(f"Sleeping for {sleep_seconds:.0f} seconds until {min(next_capture, next_send)}")
                 await asyncio.sleep(sleep_seconds)
 
                 now = datetime.datetime.now()
@@ -192,7 +202,8 @@ class EmailImages(Sensor, EasyResource):
                     self.camera = None
 
                 # Check if it's time to send the report
-                if now.hour == self.send_time and self.last_sent_date != today_str:
+                send_time_today = datetime.datetime.strptime(self.send_time, "%H:%M").time()
+                if now.hour == send_time_today.hour and now.minute == send_time_today.minute and self.last_sent_date != today_str:
                     await self.send_report(now)
                     self.last_sent_date = today_str
                     self._save_state()
@@ -239,26 +250,26 @@ class EmailImages(Sensor, EasyResource):
         img = Image.open(image_path)
         draw = ImageDraw.Draw(img)
 
-        # Extract timestamp from filename (e.g., image_20250304_090000_EST.jpg)
+        # Extract timestamp from the filenames
         filename = os.path.basename(image_path)
         try:
             parts = filename.split('_')
             if len(parts) >= 3:
-                time_str = parts[2]  # e.g., "090000"
+                time_str = parts[2]
                 formatted_time = f"{time_str[0:2]}:{time_str[2:4]}:{time_str[4:6]} EST"
             else:
                 formatted_time = "unknown"
         except Exception:
             formatted_time = "unknown"
 
-        # Load font (default to Arial if specified font fails)
+        # Load font (default to Arial)
         try:
             font = ImageFont.truetype(font_path if font_path else "arial.ttf", font_size)
         except IOError:
             font = ImageFont.load_default()
             LOGGER.warning(f"Font {font_path or 'arial.ttf'} not found, using default")
 
-        # Position text in bottom-right with padding
+        # Position text in the bottom-right (with padding)
         text_bbox = draw.textbbox((0, 0), formatted_time, font=font)
         text_width, text_height = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
         x = img.width - text_width - 10
@@ -324,7 +335,6 @@ class EmailImages(Sensor, EasyResource):
         msg["Subject"] = f"Daily Report - {self.location} - {timestamp.strftime('%Y-%m-%d')}"
         msg["To"] = ", ".join(self.recipients)
 
-        # Create GIF if enabled
         gif_path = None
         if self.make_gif:
             try:
@@ -332,7 +342,7 @@ class EmailImages(Sensor, EasyResource):
             except Exception as e:
                 LOGGER.error(f"Failed to create GIF: {str(e)}")
 
-        # Build HTML body with optional GIF
+        # Build HTML body (optional GIF)
         related = MIMEMultipart("related")
         html_body = f"""
         <html>
@@ -345,7 +355,7 @@ class EmailImages(Sensor, EasyResource):
         related.attach(MIMEText(html_body, "html"))
         msg.attach(related)
 
-        # Attach GIF inline if created
+        # Attach GIF inline (if created)
         if gif_path and os.path.exists(gif_path):
             with open(gif_path, "rb") as gif_file:
                 gif_part = MIMEImage(gif_file.read(), _subtype="gif")
@@ -353,7 +363,7 @@ class EmailImages(Sensor, EasyResource):
                 gif_part.add_header("Content-Disposition", "inline", filename="daily.gif")
                 msg.attach(gif_part)
 
-        # Attach individual images
+        # Attach images as attachments
         for image_file in image_files:
             image_path = os.path.join(daily_dir, image_file)
             with open(image_path, "rb") as file:
@@ -400,7 +410,6 @@ class EmailImages(Sensor, EasyResource):
         elif command.get("command") == "create_gif":
             day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
-                # Parse the day to ensure it's valid, though we don’t need timestamp for GIF
                 datetime.datetime.strptime(day, '%Y%m%d')
                 daily_dir = os.path.join(self.base_dir, day)
                 if not os.path.exists(daily_dir):
