@@ -379,15 +379,36 @@ class EmailImages(Sensor, EasyResource):
                 gif_part.add_header("Content-Disposition", "inline", filename="daily.gif")
                 msg.attach(gif_part)
 
-        # Attach individual images
+        # Annotate and attach individual images
         for image_file in image_files:
             image_path = os.path.join(daily_dir, image_file)
-            with open(image_path, "rb") as file:
-                attachment = MIMEBase("application", "octet-stream")
-                attachment.set_payload(file.read())
-                encoders.encode_base64(attachment)
-                attachment.add_header("Content-Disposition", f"attachment; filename={image_file}")
-                msg.attach(attachment)
+            try:
+                # Annotate the image
+                annotated_img = self.annotate_image(image_path, font_path=None, font_size=20)
+                
+                # Create a temporary file for the annotated image
+                temp_path = image_path.replace(".jpg", "_annotated.jpg")
+                annotated_img.save(temp_path, "JPEG")
+                
+                # Attach the annotated image
+                with open(temp_path, "rb") as file:
+                    attachment = MIMEBase("application", "octet-stream")
+                    attachment.set_payload(file.read())
+                    encoders.encode_base64(attachment)
+                    attachment.add_header("Content-Disposition", f"attachment; filename={os.path.basename(temp_path)}")
+                    msg.attach(attachment)
+                
+                # Optionally clean up the temporary file after attaching
+                os.remove(temp_path)
+            except Exception as e:
+                LOGGER.warning(f"Failed to annotate or attach {image_file}: {str(e)}")
+                # Fallback: attach the original image if annotation fails
+                with open(image_path, "rb") as file:
+                    attachment = MIMEBase("application", "octet-stream")
+                    attachment.set_payload(file.read())
+                    encoders.encode_base64(attachment)
+                    attachment.add_header("Content-Disposition", f"attachment; filename={image_file}")
+                    msg.attach(attachment)
 
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
             smtp.starttls()
