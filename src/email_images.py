@@ -213,7 +213,8 @@ class EmailImages(Sensor, EasyResource):
                     self.last_sent_date != today_str):
                     await self.send_report(now)
                     self.last_sent_date = today_str
-                    self.last_sent_time = now.strftime("%H:%M")
+                    # Changed from now.strftime("%H:%M") to str(now)
+                    self.last_sent_time = str(now)
                     self._save_state()
 
         except Exception as e:
@@ -333,6 +334,10 @@ class EmailImages(Sensor, EasyResource):
                 functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
             )
             self.report = "sent"
+            self.last_sent_date = today_str
+            # Changed from now.strftime("%H:%M") to str(now)
+            self.last_sent_time = str(now)
+            self._save_state()
             LOGGER.info(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
             self.report = f"error: {str(e)}"
@@ -411,6 +416,11 @@ class EmailImages(Sensor, EasyResource):
                     None,
                     functools.partial(self._send_daily_report_sync, images_to_send, timestamp, daily_dir)
                 )
+                self.report = "sent"
+                self.last_sent_date = day
+                 # Changed to full datetime string
+                self.last_sent_time = str(timestamp)
+                self._save_state()
                 LOGGER.info(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
                 return {"status": f"Sent email with {len(images_to_send)} images for {day}"}
             except ValueError:
@@ -455,7 +465,7 @@ class EmailImages(Sensor, EasyResource):
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "none",
             "report": self.report,
             "last_sent_date": self.last_sent_date if self.last_sent_date else "never",
-            "last_sent_time": self.last_sent_time if self.last_sent_time else "never",
+            "last_sent_time": str(datetime.datetime.fromisoformat(self.last_sent_time)) if self.last_sent_time and self.last_sent_time != "never" else "never",  # Match next_send_time format
             "pid": os.getpid(),
             "gif": self.make_gif,
             "location": self.location,
