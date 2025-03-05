@@ -236,7 +236,7 @@ class EmailImages(Sensor, EasyResource):
         draw.text((x, y), formatted_time, fill="white", font=font)
         return img
 
-    def create_daily_gif(self, daily_dir: str, frame_duration: int = 100, font_path: Optional[str] = None, font_size: int = 20) -> str:
+    def create_daily_gif(self, daily_dir: str, frame_duration: int = 1000, font_path: Optional[str] = None, font_size: int = 20) -> str:
         """Create an animated GIF from daily images, saved as 'daily.gif'."""
         image_files = sorted(
             [os.path.join(daily_dir, f) for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")],
@@ -295,7 +295,7 @@ class EmailImages(Sensor, EasyResource):
         gif_path = None
         if self.make_gif:
             try:
-                gif_path = self.create_daily_gif(daily_dir, frame_duration=100, font_path=None, font_size=20)
+                gif_path = self.create_daily_gif(daily_dir, frame_duration=1000, font_path=None, font_size=20)
             except Exception as e:
                 LOGGER.error(f"Failed to create GIF: {str(e)}")
 
