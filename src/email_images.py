@@ -46,26 +46,34 @@ class EmailImages(Sensor, EasyResource):
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
-        # Validate capture_times
-        capture_times = attributes.get("capture_times", ["6:00", "7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"])
-        for time_str in capture_times:
-            try:
-                datetime.datetime.strptime(time_str, "%H:%M")
-            except ValueError:
-                raise Exception(f"Invalid capture_times entry '{time_str}': must be in 'HH:MM' format")
+        # Validate capture_times_weekday if provided
+        if "capture_times_weekday" in attributes:
+            for time_str in attributes["capture_times_weekday"]:
+                try:
+                    datetime.datetime.strptime(time_str, "%H:%M")
+                except ValueError:
+                    raise Exception(f"Invalid capture_times_weekday entry '{time_str}': must be in 'HH:MM' format")
+        # Validate capture_times_weekend if provided
+        if "capture_times_weekend" in attributes:
+            for time_str in attributes["capture_times_weekend"]:
+                try:
+                    datetime.datetime.strptime(time_str, "%H:%M")
+                except ValueError:
+                    raise Exception(f"Invalid capture_times_weekend entry '{time_str}': must be in 'HH:MM' format")
         # Validate send_time
-        send_time = attributes.get("send_time", "20:00")
-        try:
-            datetime.datetime.strptime(str(send_time), "%H:%M")
-        except ValueError:
-            raise Exception(f"Invalid send_time '{send_time}': must be in 'HH:MM' format")
+        if "send_time" in attributes:
+            try:
+                datetime.datetime.strptime(attributes["send_time"], "%H:%M")
+            except ValueError:
+                raise Exception(f"Invalid send_time '{attributes['send_time']}': must be in 'HH:MM' format")
         return [attributes["camera"]]
 
     def __init__(self, config: ComponentConfig):
         super().__init__(config.name)
         self.email = ""
         self.password = ""
-        self.capture_times = ["7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"]
+        self.capture_times_weekday = []
+        self.capture_times_weekend = []
         self.send_time = "20:00"
         self.camera = None
         self.camera_name = ""
@@ -119,7 +127,8 @@ class EmailImages(Sensor, EasyResource):
         attributes = struct_to_dict(config.attributes)
         self.email = attributes["email"]
         self.password = attributes["password"]
-        self.capture_times = attributes.get("capture_times", ["7:00", "8:00", "9:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00"])
+        self.capture_times_weekday = attributes.get("capture_times_weekday", ["7:00", "7:15", "8:00", "11:00", "11:30"])
+        self.capture_times_weekend = attributes.get("capture_times_weekend", ["8:00", "8:15", "9:00", "11:00", "11:30"])
         self.send_time = attributes.get("send_time", "20:00")
         self.camera_name = attributes["camera"]
         self.recipients = attributes["recipients"]
@@ -133,7 +142,7 @@ class EmailImages(Sensor, EasyResource):
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
-        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, capture_times: {self.capture_times}, make_gif: {self.make_gif}, location: {self.location}")
+        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, capture_times_weekday: {self.capture_times_weekday}, capture_times_weekend: {self.capture_times_weekend}, make_gif: {self.make_gif}, location: {self.location}")
 
         if not os.path.exists(self.base_dir):
             os.makedirs(self.base_dir)
@@ -142,22 +151,42 @@ class EmailImages(Sensor, EasyResource):
             self.capture_loop_task.cancel()
         self.capture_loop_task = asyncio.create_task(self.run_scheduled_loop())
 
+    def _get_capture_times_for_day(self, date: datetime.date) -> list[str]:
+        """Return the appropriate capture times based on the day of the week."""
+        if date.weekday() < 5:  # Monday (0) to Friday (4)
+            return self.capture_times_weekday
+        else:  # Saturday (5) and Sunday (6)
+            return self.capture_times_weekend
+
     def _get_next_capture_time(self, now: datetime.datetime) -> datetime.datetime:
-        """Calculate the next capture time based on current time and capture_times list."""
+        """Calculate the next capture time based on current time and day-specific capture times."""
         today = now.date()
-        capture_datetimes = [
-            datetime.datetime.combine(today, datetime.datetime.strptime(t, "%H:%M").time())
-            for t in self.capture_times
-        ]
-        
-        # Find the next capture datetime after now
-        for capture_dt in sorted(capture_datetimes):
-            if capture_dt > now:
-                return capture_dt
-        
-        # If all times are past, move to the first time tomorrow
         tomorrow = today + datetime.timedelta(days=1)
-        return datetime.datetime.combine(tomorrow, datetime.datetime.strptime(self.capture_times[0], "%H:%M").time())
+
+        # Today’s capture times
+        capture_times_today = self._get_capture_times_for_day(today)
+        capture_datetimes_today = [
+            datetime.datetime.combine(today, datetime.datetime.strptime(t, "%H:%M").time())
+            for t in capture_times_today
+        ]
+
+        # Tomorrow’s capture times
+        capture_times_tomorrow = self._get_capture_times_for_day(tomorrow)
+        capture_datetimes_tomorrow = [
+            datetime.datetime.combine(tomorrow, datetime.datetime.strptime(t, "%H:%M").time())
+            for t in capture_times_tomorrow
+        ]
+
+        # Combine and find the next capture after now
+        all_capture_datetimes = capture_datetimes_today + capture_datetimes_tomorrow
+        future_captures = [dt for dt in all_capture_datetimes if dt > now]
+        if future_captures:
+            return min(future_captures)
+        else:
+            # Fallback: first capture time of the day after tomorrow (rare case)
+            day_after_tomorrow = tomorrow + datetime.timedelta(days=1)
+            capture_times_next = self._get_capture_times_for_day(day_after_tomorrow)
+            return datetime.datetime.combine(day_after_tomorrow, datetime.datetime.strptime(capture_times_next[0], "%H:%M").time())
 
     def _get_next_send_time(self, now: datetime.datetime) -> datetime.datetime:
         """Calculate the next send time based on current time and send_time."""
@@ -213,7 +242,6 @@ class EmailImages(Sensor, EasyResource):
                     self.last_sent_date != today_str):
                     await self.send_report(now)
                     self.last_sent_date = today_str
-                    # Changed from now.strftime("%H:%M") to str(now)
                     self.last_sent_time = str(now)
                     self._save_state()
 
@@ -335,7 +363,6 @@ class EmailImages(Sensor, EasyResource):
             )
             self.report = "sent"
             self.last_sent_date = today_str
-            # Changed from now.strftime("%H:%M") to str(now)
             self.last_sent_time = str(now)
             self._save_state()
             LOGGER.info(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
@@ -398,7 +425,7 @@ class EmailImages(Sensor, EasyResource):
                     attachment.add_header("Content-Disposition", f"attachment; filename={os.path.basename(temp_path)}")
                     msg.attach(attachment)
                 
-                # Optionally clean up the temporary file after attaching
+                # Clean up the temporary file after attaching
                 os.remove(temp_path)
             except Exception as e:
                 LOGGER.warning(f"Failed to annotate or attach {image_file}: {str(e)}")
@@ -439,7 +466,6 @@ class EmailImages(Sensor, EasyResource):
                 )
                 self.report = "sent"
                 self.last_sent_date = day
-                 # Changed to full datetime string
                 self.last_sent_time = str(timestamp)
                 self._save_state()
                 LOGGER.info(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
@@ -486,14 +512,15 @@ class EmailImages(Sensor, EasyResource):
             "last_capture_time": str(self.last_capture_time) if self.last_capture_time else "none",
             "report": self.report,
             "last_sent_date": self.last_sent_date if self.last_sent_date else "never",
-            "last_sent_time": str(datetime.datetime.fromisoformat(self.last_sent_time)) if self.last_sent_time and self.last_sent_time != "never" else "never",  # Match next_send_time format
+            "last_sent_time": str(datetime.datetime.fromisoformat(self.last_sent_time)) if self.last_sent_time and self.last_sent_time != "never" else "never",
             "pid": os.getpid(),
             "gif": self.make_gif,
             "location": self.location,
             "next_capture_time": str(self._get_next_capture_time(now)),
             "next_send_date": next_send_time.strftime("%Y%m%d"),
             "next_send_time": str(next_send_time),
-            "capture_times": self.capture_times
+            "capture_times_weekday": self.capture_times_weekday,
+            "capture_times_weekend": self.capture_times_weekend
         }
 
 async def main():
