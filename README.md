@@ -34,7 +34,7 @@ Configure the model using the following JSON template in your Viam robot configu
 
 | Name          | Type   | Inclusion | Description                |
 |---------------|--------|-----------|----------------------------|
-| `email` | string  | Required  | Gmail address for sending emails. |
+| `email` | string | Required  | Gmail address for sending emails. |
 | `password` | string | Required  | Gmail App Password for authentication (generate via Google Account settings). |
 | `camera` | string | Required  | Name of the remote camera (e.g., "remote-1:ffmpeg"). |
 | `capture_times_weekday` | list of string | Optional  | Capture times in EST ("HH:MM") for weekdays (Mon-Fri). Defaults to `["7:00", "7:15", "8:00", "11:00", "11:30"]`. |
@@ -42,12 +42,12 @@ Configure the model using the following JSON template in your Viam robot configu
 | `recipients` | int | Optional  | Email addresses to receive the daily report. |
 | `send_time` | int | Optional  | Time in EST ("HH:MM") to send the daily report. Defaults to `"20:00"`. |
 | `save_dir` | string | Optional  | Directory to save images. Defaults to `"/home/hunter.volkman/images"`. |
-| `crop_top` | int | Optional  | Top pixel coordinate for cropping. Defaults to 0. |
-| `crop_left` | int | Optional  | Left pixel coordinate for cropping. Defaults to 0. |
-| `crop_width` | int | Optional  | Width of the crop region. Defaults to 0 (full width). |
-| `crop_height` | int | Optional  | Height of the crop region. Defaults to 0 (full height). |
-| `location` | string | Required  | Location identifier for the email subject and body. |
-| `make_gif` | boolean | Optional  | Enable daily animated GIF creation. Defaults to `false`. |
+| `crop_top` | int | Optional | Top pixel coordinate for cropping. Defaults to 0. |
+| `crop_left` | int | Optional | Left pixel coordinate for cropping. Defaults to 0. |
+| `crop_width` | int | Optional | Width of the crop region. Defaults to 0 (full width). |
+| `crop_height` | int | Optional | Height of the crop region. Defaults to 0 (full height). |
+| `location` | string | Required | Location identifier for the email subject and body. |
+| `make_gif` | boolean | Optional | Enable daily animated GIF creation. Defaults to `false`. |
 
 
 #### Example Configuration
