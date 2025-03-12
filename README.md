@@ -15,7 +15,8 @@ Configure the model using the following JSON template in your Viam robot configu
   "email": "<string>",
   "password": "<string>",
   "camera": "<string>",
-  "capture_times": ["<string>", "<string>"],
+  "capture_times_weekday": ["<string>", "<string>"],
+  "capture_times_weekend": ["<string>", "<string>"],
   "recipients": ["<string>", "<string>"],
   "send_time": "<string>",
   "save_dir": "<string>",
@@ -33,31 +34,33 @@ Configure the model using the following JSON template in your Viam robot configu
 
 | Name          | Type   | Inclusion | Description                |
 |---------------|--------|-----------|----------------------------|
-| `email` | string  | Required  | GMail address for sending emails. |
-| `password` | string | Required  | GMail App Password for authentication (generate via Google Account settings). |
+| `email` | string  | Required  | Gmail address for sending emails. |
+| `password` | string | Required  | Gmail App Password for authentication (generate via Google Account settings). |
 | `camera` | string | Required  | Name of the remote camera (e.g., "remote-1:ffmpeg"). |
-| `capture_times` | list of int | Optional  | Times in EST (`"HH:MM"`) for image captures (e.g., `["7:00", "7:05"]`). Defaults to hourly from 7:00 to 19:00. |
+| `capture_times_weekday` | list of string | Optional  | Capture times in EST ("HH:MM") for weekdays (Mon-Fri). Defaults to `["7:00", "7:15", "8:00", "11:00", "11:30"]`. |
+| `capture_times_weekend` | list of string | Optional  | Capture times in EST ("HH:MM") for weekends (Sat-Sun). Defaults to `["8:00", "8:15", "9:00", "11:00", "11:30"]`. |
 | `recipients` | int | Optional  | Email addresses to receive the daily report. |
-| `send_time` | int | Optional  | Time in EST (`"HH:MM"`) to send the daily report (e.g., `"20:00"`). Defaults to `"20:00"`. |
-| `save_dir` | string | Optional  | Directory to save images (e.g., `"/home/user.name/images"`). |
-| `crop_top` | int | Optional  | Top pixel coordinate for cropping. Defaults to 0 (no cropping from the top). |
-| `crop_left` | int | Optional  | Left pixel coordinate for cropping. Defaults to 0 (no cropping from the left). |
-| `crop_width` | int | Optional  | Width of the crop region. Defaults to 0 (full width if 0). |
-| `crop_height` | int | Optional  | Height of the crop region. Defaults to 0 (full height if 0). |
-| `location` | string | Required  | Identifier for the location or monitoring site; used in the email subject and body for clarity. Defaults to `""`. |
-| `make_gif` | boolean | Optional  | Enable creation of a daily animated GIF. Defaults to `false`. |
+| `send_time` | int | Optional  | Time in EST ("HH:MM") to send the daily report. Defaults to `"20:00"`. |
+| `save_dir` | string | Optional  | Directory to save images. Defaults to `"/home/hunter.volkman/images"`. |
+| `crop_top` | int | Optional  | Top pixel coordinate for cropping. Defaults to 0. |
+| `crop_left` | int | Optional  | Left pixel coordinate for cropping. Defaults to 0. |
+| `crop_width` | int | Optional  | Width of the crop region. Defaults to 0 (full width). |
+| `crop_height` | int | Optional  | Height of the crop region. Defaults to 0 (full height). |
+| `location` | string | Required  | Location identifier for the email subject and body. |
+| `make_gif` | boolean | Optional  | Enable daily animated GIF creation. Defaults to `false`. |
 
 
 #### Example Configuration
 
 ```json
 {
-  "email": "user.name@example.com",
-  "password": "gmail-app-password",
-  "camera": "remote-1:camera-1",
-  "capture_times": ["7:00", "7:05", "7:10", "7:15", "7:20"],
-  "recipients": ["recipient1@example.com", "recipient2@example.com"],
-  "send_time": "20:00",
+  "email": "user.name@viam.com",
+  "password": "<gmail-app-password",
+  "camera": "remote:camera",
+  "capture_times_weekday": ["7:00", "7:15", "8:00", "11:00", "11:30"],
+  "capture_times_weekend": ["8:00", "8:15", "9:00", "11:00", "11:30"],
+  "recipients": ["my-email-list@viam.com"],
+  "send_time": "13:30",
   "save_dir": "/home/user.name/images",
   "crop_top": 0,
   "crop_left": 0,
