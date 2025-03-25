@@ -90,8 +90,9 @@ class EmailImages(Sensor, EasyResource):
         self.crop_height = 0
         self.make_gif = False
         self.location = ""
-        self.state_file = os.path.join(self.base_dir, "state.json")
-        self.lock_file = os.path.join(self.base_dir, "lockfile")
+        # Use sensor name to create unique state and lock files per sensor
+        self.state_file = os.path.join(self.base_dir, f"state_{self.name}.json")
+        self.lock_file = os.path.join(self.base_dir, f"lockfile_{self.name}")
         self._load_state()
         LOGGER.info(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}, PID: {os.getpid()}, location: {self.location}")
 
@@ -107,7 +108,7 @@ class EmailImages(Sensor, EasyResource):
                     if state.get("last_capture_time")
                     else None
                 )
-            LOGGER.info(f"Loaded state: last_sent_date={self.last_sent_date}, last_sent_time={self.last_sent_time}, last_capture_time={self.last_capture_time}")
+            LOGGER.info(f"Loaded state from {self.state_file}: last_sent_date={self.last_sent_date}, last_sent_time={self.last_sent_time}, last_capture_time={self.last_capture_time}")
         else:
             LOGGER.info(f"No state file at {self.state_file}, starting fresh")
 
@@ -200,10 +201,10 @@ class EmailImages(Sensor, EasyResource):
         """Run a scheduled loop that wakes up for specific capture times and send_time."""
         lock = fasteners.InterProcessLock(self.lock_file)
         if not lock.acquire(blocking=False):
-            LOGGER.info(f"Another instance already running (PID {os.getpid()}), exiting")
+            LOGGER.info(f"Another instance already running for {self.name} (PID {os.getpid()}), exiting")
             return
         try:
-            LOGGER.info(f"Started scheduled loop with PID {os.getpid()}")
+            LOGGER.info(f"Started scheduled loop for {self.name} with PID {os.getpid()}")
             while True:
                 now = datetime.datetime.now()
                 today_str = now.strftime("%Y%m%d")
@@ -229,7 +230,7 @@ class EmailImages(Sensor, EasyResource):
                     )
                     self.camera = self._dependencies.get(camera_resource_name)
                     if not self.camera:
-                        LOGGER.error(f"Camera {self.camera_name} not available")
+                        LOGGER.error(f"Camera {self.camera_name} not available for {self.name}")
                     else:
                         await self.capture_image(now)
                         self._save_state()
@@ -246,16 +247,16 @@ class EmailImages(Sensor, EasyResource):
                     self._save_state()
 
         except Exception as e:
-            LOGGER.error(f"Scheduled loop failed: {str(e)}")
+            LOGGER.error(f"Scheduled loop failed for {self.name}: {str(e)}")
         finally:
             lock.release()
-            LOGGER.info(f"Released lock, loop exiting (PID {os.getpid()})")
+            LOGGER.info(f"Released lock for {self.name}, loop exiting (PID {os.getpid()})")
 
     async def capture_image(self, now):
         """Capture an image with retry logic for flaky connections."""
         for attempt in range(3):
             try:
-                LOGGER.info(f"Attempting capture at {now} (attempt {attempt + 1})")
+                LOGGER.info(f"Attempting capture for {self.name} at {now} (attempt {attempt + 1})")
                 image = await self.camera.get_image()
                 img = Image.open(BytesIO(image.data))
                 crop_width = self.crop_width or img.width - self.crop_left
@@ -273,14 +274,14 @@ class EmailImages(Sensor, EasyResource):
                 save_path = os.path.join(daily_dir, filename)
                 cropped_img.save(save_path, "JPEG")
                 self.last_capture_time = now
-                LOGGER.info(f"Saved image: {save_path}")
+                LOGGER.info(f"Saved image for {self.name}: {save_path}")
                 break
             except Exception as e:
-                LOGGER.warning(f"Capture failed (attempt {attempt + 1}): {str(e)}")
+                LOGGER.warning(f"Capture failed for {self.name} (attempt {attempt + 1}): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2)
                 else:
-                    LOGGER.error(f"All capture attempts failed at {now}")
+                    LOGGER.error(f"All capture attempts failed for {self.name} at {now}")
 
     def annotate_image(self, image_path: str, font_path: Optional[str] = None, font_size: int = 20) -> Image.Image:
         """Annotate an image with its timestamp in the bottom-right corner."""
@@ -326,7 +327,7 @@ class EmailImages(Sensor, EasyResource):
             key=lambda x: os.path.basename(x).split('_')[2]
         )
         if not image_files:
-            LOGGER.warning(f"No images found in {daily_dir} for GIF creation")
+            LOGGER.warning(f"No images found in {daily_dir} for GIF creation for {self.name}")
             raise ValueError("No images available for GIF")
 
         frames = []
@@ -336,7 +337,7 @@ class EmailImages(Sensor, EasyResource):
 
         gif_path = os.path.join(daily_dir, "daily.gif")
         frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=frame_duration, loop=0)
-        LOGGER.info(f"Created daily GIF at {gif_path} with {len(frames)} frames")
+        LOGGER.info(f"Created daily GIF for {self.name} at {gif_path} with {len(frames)} frames")
         return gif_path
 
     async def send_report(self, now):
@@ -344,19 +345,19 @@ class EmailImages(Sensor, EasyResource):
         today_str = now.strftime('%Y%m%d')
         daily_dir = os.path.join(self.base_dir, today_str)
         if not os.path.exists(daily_dir):
-            LOGGER.info(f"No directory for {today_str}, skipping report")
+            LOGGER.info(f"No directory for {today_str} for {self.name}, skipping report")
             self.report = "no_images"
             return
 
         all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
         if not all_images:
-            LOGGER.info(f"No images for {today_str}, skipping report")
+            LOGGER.info(f"No images for {today_str} for {self.name}, skipping report")
             self.report = "no_images"
             return
 
         images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
         try:
-            LOGGER.info(f"Sending report with {len(images_to_send)} images at {now}")
+            LOGGER.info(f"Sending report for {self.name} with {len(images_to_send)} images at {now}")
             await asyncio.get_running_loop().run_in_executor(
                 None,
                 functools.partial(self._send_daily_report_sync, images_to_send, now, daily_dir)
@@ -365,10 +366,10 @@ class EmailImages(Sensor, EasyResource):
             self.last_sent_date = today_str
             self.last_sent_time = str(now)
             self._save_state()
-            LOGGER.info(f"Sent report with {len(images_to_send)} images to {', '.join(self.recipients)}")
+            LOGGER.info(f"Sent report for {self.name} with {len(images_to_send)} images to {', '.join(self.recipients)}")
         except Exception as e:
             self.report = f"error: {str(e)}"
-            LOGGER.error(f"Email send error at {now}: {str(e)}")
+            LOGGER.error(f"Email send error for {self.name} at {now}: {str(e)}")
 
     def _send_daily_report_sync(self, image_files, timestamp, daily_dir):
         """Send the daily email report, optionally including a GIF if make_gif is enabled."""
@@ -383,7 +384,7 @@ class EmailImages(Sensor, EasyResource):
             try:
                 gif_path = self.create_daily_gif(daily_dir, frame_duration=1000, font_path=None, font_size=20)
             except Exception as e:
-                LOGGER.error(f"Failed to create GIF: {str(e)}")
+                LOGGER.error(f"Failed to create GIF for {self.name}: {str(e)}")
 
         # Build HTML body with optional GIF
         related = MIMEMultipart("related")
@@ -428,7 +429,7 @@ class EmailImages(Sensor, EasyResource):
                 # Clean up the temporary file after attaching
                 os.remove(temp_path)
             except Exception as e:
-                LOGGER.warning(f"Failed to annotate or attach {image_file}: {str(e)}")
+                LOGGER.warning(f"Failed to annotate or attach {image_file} for {self.name}: {str(e)}")
                 # Fallback: attach the original image if annotation fails
                 with open(image_path, "rb") as file:
                     attachment = MIMEBase("application", "octet-stream")
@@ -441,7 +442,7 @@ class EmailImages(Sensor, EasyResource):
             smtp.starttls()
             smtp.login(self.email, self.password)
             smtp.send_message(msg)
-            LOGGER.info(f"Daily report sent to {msg['To']}{' with GIF' if gif_path else ''}")
+            LOGGER.info(f"Daily report sent for {self.name} to {msg['To']}{' with GIF' if gif_path else ''}")
 
     async def do_command(self, command: Mapping[str, Any], *, timeout: Optional[float] = None, **kwargs) -> Mapping[str, Any]:
         if command.get("command") == "send_email":
@@ -450,16 +451,16 @@ class EmailImages(Sensor, EasyResource):
                 timestamp = datetime.datetime.strptime(day, '%Y%m%d')
                 daily_dir = os.path.join(self.base_dir, day)
                 if not os.path.exists(daily_dir):
-                    LOGGER.info(f"No directory for {day}")
+                    LOGGER.info(f"No directory for {day} for {self.name}")
                     return {"status": f"No images directory for {day}"}
 
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
                 if not all_images:
-                    LOGGER.info(f"No images for {day}")
+                    LOGGER.info(f"No images for {day} for {self.name}")
                     return {"status": f"No images found for {day}"}
 
                 images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
-                LOGGER.info(f"Manual send for {day} with {len(images_to_send)} images")
+                LOGGER.info(f"Manual send for {self.name} for {day} with {len(images_to_send)} images")
                 await asyncio.get_running_loop().run_in_executor(
                     None,
                     functools.partial(self._send_daily_report_sync, images_to_send, timestamp, daily_dir)
@@ -468,7 +469,7 @@ class EmailImages(Sensor, EasyResource):
                 self.last_sent_date = day
                 self.last_sent_time = str(timestamp)
                 self._save_state()
-                LOGGER.info(f"Manual report sent with {len(images_to_send)} images to {', '.join(self.recipients)}")
+                LOGGER.info(f"Manual report sent for {self.name} with {len(images_to_send)} images to {', '.join(self.recipients)}")
                 return {"status": f"Sent email with {len(images_to_send)} images for {day}"}
             except ValueError:
                 return {"status": f"Invalid day format: {day}, use YYYYMMDD"}
@@ -481,15 +482,15 @@ class EmailImages(Sensor, EasyResource):
                 datetime.datetime.strptime(day, '%Y%m%d')
                 daily_dir = os.path.join(self.base_dir, day)
                 if not os.path.exists(daily_dir):
-                    LOGGER.info(f"No directory for {day}")
+                    LOGGER.info(f"No directory for {day} for {self.name}")
                     return {"status": f"No images directory for {day}"}
 
                 all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
                 if not all_images:
-                    LOGGER.info(f"No images for {day}")
+                    LOGGER.info(f"No images for {day} for {self.name}")
                     return {"status": f"No images found for {day}"}
 
-                LOGGER.info(f"Creating GIF for {day} with {len(all_images)} images")
+                LOGGER.info(f"Creating GIF for {self.name} for {day} with {len(all_images)} images")
                 gif_path = await asyncio.get_running_loop().run_in_executor(
                     None,
                     functools.partial(self.create_daily_gif, daily_dir)
@@ -520,7 +521,8 @@ class EmailImages(Sensor, EasyResource):
             "next_send_date": next_send_time.strftime("%Y%m%d"),
             "next_send_time": str(next_send_time),
             "capture_times_weekday": self.capture_times_weekday,
-            "capture_times_weekend": self.capture_times_weekend
+            "capture_times_weekend": self.capture_times_weekend,
+            "state_file": self.state_file  # Added for debugging
         }
 
 async def main():
