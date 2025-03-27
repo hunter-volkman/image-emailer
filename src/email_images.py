@@ -27,6 +27,11 @@ import fasteners
 
 LOGGER = getLogger(__name__)
 
+# Constants for image suffixes to avoid magic strings
+PRIMARY_SUFFIX = "_primary_EST.jpg"
+SECONDARY_SUFFIX = "_secondary_EST.jpg"
+STACKED_SUFFIX = "_stacked_EST.jpg"
+
 class EmailImages(Sensor, EasyResource):
     MODEL: ClassVar[Model] = Model(ModelFamily("hunter", "sensor"), "image-emailer")
 
@@ -42,7 +47,7 @@ class EmailImages(Sensor, EasyResource):
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
         attributes = struct_to_dict(config.attributes)
-        required = ["email", "password", "camera", "recipients", "location"]
+        required = ["email", "password", "primary_camera", "recipients", "location"]
         for attr in required:
             if attr not in attributes:
                 raise Exception(f"{attr} is required")
@@ -66,7 +71,15 @@ class EmailImages(Sensor, EasyResource):
                 datetime.datetime.strptime(attributes["send_time"], "%H:%M")
             except ValueError:
                 raise Exception(f"Invalid send_time '{attributes['send_time']}': must be in 'HH:MM' format")
-        return [attributes["camera"]]
+        # Validate stack_orientation if provided
+        if "stack_orientation" in attributes:
+            if attributes["stack_orientation"] not in ["vertical", "horizontal"]:
+                raise Exception(f"Invalid stack_orientation '{attributes['stack_orientation']}': must be 'vertical' or 'horizontal'")
+        # Return dependencies (primary camera is required, secondary is optional)
+        dependencies = [attributes["primary_camera"]]
+        if "secondary_camera" in attributes:
+            dependencies.append(attributes["secondary_camera"])
+        return dependencies
 
     def __init__(self, config: ComponentConfig):
         super().__init__(config.name)
@@ -75,10 +88,14 @@ class EmailImages(Sensor, EasyResource):
         self.capture_times_weekday = []
         self.capture_times_weekend = []
         self.send_time = "20:00"
-        self.camera = None
-        self.camera_name = ""
+        self.primary_camera = None
+        self.primary_camera_name = ""
+        self.secondary_camera = None
+        self.secondary_camera_name = ""
         self.recipients = []
         self.base_dir = "/home/hunter.volkman/images"
+        # Unique directory per sensor
+        self.sensor_dir = os.path.join(self.base_dir, self.name)
         self.last_capture_time = None
         self.last_sent_date = None
         self.last_sent_time = None
@@ -90,11 +107,13 @@ class EmailImages(Sensor, EasyResource):
         self.crop_height = 0
         self.make_gif = False
         self.location = ""
+        self.stack_images = False  # Feature flag for stacking images
+        self.stack_orientation = "vertical"  # Default to vertical stacking
         # Use sensor name to create unique state and lock files per sensor
         self.state_file = os.path.join(self.base_dir, f"state_{self.name}.json")
         self.lock_file = os.path.join(self.base_dir, f"lockfile_{self.name}")
         self._load_state()
-        LOGGER.info(f"Initialized EmailImages with name: {self.name}, base_dir: {self.base_dir}, PID: {os.getpid()}, location: {self.location}")
+        LOGGER.info(f"Initialized EmailImages with name: {self.name}, sensor_dir: {self.sensor_dir}, PID: {os.getpid()}, location: {self.location}")
 
     def _load_state(self):
         """Load persistent state from file."""
@@ -131,22 +150,27 @@ class EmailImages(Sensor, EasyResource):
         self.capture_times_weekday = attributes.get("capture_times_weekday", ["7:00", "7:15", "8:00", "11:00", "11:30"])
         self.capture_times_weekend = attributes.get("capture_times_weekend", ["8:00", "8:15", "9:00", "11:00", "11:30"])
         self.send_time = attributes.get("send_time", "20:00")
-        self.camera_name = attributes["camera"]
+        self.primary_camera_name = attributes["primary_camera"]
+        self.secondary_camera_name = attributes.get("secondary_camera", "")
         self.recipients = attributes["recipients"]
         self.base_dir = attributes.get("save_dir", "/home/hunter.volkman/images")
+        # Update sensor-specific directory
+        self.sensor_dir = os.path.join(self.base_dir, self.name)
         self.crop_top = int(float(attributes.get("crop_top", 0)))
         self.crop_left = int(float(attributes.get("crop_left", 0)))
         self.crop_width = int(float(attributes.get("crop_width", 0)))
         self.crop_height = int(float(attributes.get("crop_height", 0)))
         self.make_gif = bool(attributes.get("make_gif", False))
         self.location = attributes.get("location", "")
+        self.stack_images = bool(attributes.get("stack_images", False))
+        self.stack_orientation = attributes.get("stack_orientation", "vertical")
 
         # Update dependencies on reconfigure
         self._dependencies = dependencies
-        LOGGER.info(f"Reconfigured {self.name} with base_dir: {self.base_dir}, last_capture_time: {self.last_capture_time}, capture_times_weekday: {self.capture_times_weekday}, capture_times_weekend: {self.capture_times_weekend}, make_gif: {self.make_gif}, location: {self.location}")
+        LOGGER.info(f"Reconfigured {self.name} with sensor_dir: {self.sensor_dir}, last_capture_time: {self.last_capture_time}, capture_times_weekday: {self.capture_times_weekday}, capture_times_weekend: {self.capture_times_weekend}, make_gif: {self.make_gif}, location: {self.location}, stack_images: {self.stack_images}, stack_orientation: {self.stack_orientation}")
 
-        if not os.path.exists(self.base_dir):
-            os.makedirs(self.base_dir)
+        if not os.path.exists(self.sensor_dir):
+            os.makedirs(self.sensor_dir)
 
         if self.capture_loop_task:
             self.capture_loop_task.cancel()
@@ -154,9 +178,11 @@ class EmailImages(Sensor, EasyResource):
 
     def _get_capture_times_for_day(self, date: datetime.date) -> list[str]:
         """Return the appropriate capture times based on the day of the week."""
-        if date.weekday() < 5:  # Monday (0) to Friday (4)
+        # Monday (0) to Friday (4)
+        if date.weekday() < 5:
             return self.capture_times_weekday
-        else:  # Saturday (5) and Sunday (6)
+        # Saturday (5) and Sunday (6)
+        else:
             return self.capture_times_weekend
 
     def _get_next_capture_time(self, now: datetime.datetime) -> datetime.datetime:
@@ -184,7 +210,7 @@ class EmailImages(Sensor, EasyResource):
         if future_captures:
             return min(future_captures)
         else:
-            # Fallback: first capture time of the day after tomorrow (rare case)
+            # Fallback: first capture time of the day after tomorrow (the rare case)
             day_after_tomorrow = tomorrow + datetime.timedelta(days=1)
             capture_times_next = self._get_capture_times_for_day(day_after_tomorrow)
             return datetime.datetime.combine(day_after_tomorrow, datetime.datetime.strptime(capture_times_next[0], "%H:%M").time())
@@ -225,16 +251,25 @@ class EmailImages(Sensor, EasyResource):
                 now = datetime.datetime.now()
                 # Check if it's time to capture
                 if now >= next_capture and (self.last_capture_time is None or now > self.last_capture_time):
-                    camera_resource_name = ResourceName(
-                        namespace="rdk", type="component", subtype="camera", name=self.camera_name
+                    primary_resource_name = ResourceName(
+                        namespace="rdk", type="component", subtype="camera", name=self.primary_camera_name
                     )
-                    self.camera = self._dependencies.get(camera_resource_name)
-                    if not self.camera:
-                        LOGGER.error(f"Camera {self.camera_name} not available for {self.name}")
+                    self.primary_camera = self._dependencies.get(primary_resource_name)
+                    if not self.primary_camera:
+                        LOGGER.error(f"Primary camera {self.primary_camera_name} not available for {self.name}")
                     else:
+                        # Set secondary camera if configured
+                        if self.secondary_camera_name:
+                            secondary_resource_name = ResourceName(
+                                namespace="rdk", type="component", subtype="camera", name=self.secondary_camera_name
+                            )
+                            self.secondary_camera = self._dependencies.get(secondary_resource_name)
+                            if not self.secondary_camera:
+                                LOGGER.error(f"Secondary camera {self.secondary_camera_name} not available for {self.name}")
                         await self.capture_image(now)
                         self._save_state()
-                    self.camera = None
+                    self.primary_camera = None
+                    self.secondary_camera = None
 
                 # Check if it's time to send the report
                 send_time_today = datetime.datetime.strptime(self.send_time, "%H:%M").time()
@@ -253,11 +288,19 @@ class EmailImages(Sensor, EasyResource):
             LOGGER.info(f"Released lock for {self.name}, loop exiting (PID {os.getpid()})")
 
     async def capture_image(self, now):
-        """Capture an image with retry logic for flaky connections."""
+        """Capture images from primary and secondary cameras with retry logic, optionally stacking them."""
+        today_str = now.strftime('%Y%m%d')
+        # Use sensor-specific directory
+        daily_dir = os.path.join(self.sensor_dir, today_str)
+        os.makedirs(daily_dir, exist_ok=True)
+        timestamp = now.strftime('%Y%m%d_%H%M%S')
+        
+        # Capture primary camera (ffmpeg)
+        primary_path = None
         for attempt in range(3):
             try:
-                LOGGER.info(f"Attempting capture for {self.name} at {now} (attempt {attempt + 1})")
-                image = await self.camera.get_image()
+                LOGGER.info(f"Attempting primary capture for {self.name} at {now} (attempt {attempt + 1})")
+                image = await self.primary_camera.get_image()
                 img = Image.open(BytesIO(image.data))
                 crop_width = self.crop_width or img.width - self.crop_left
                 crop_height = self.crop_height or img.height - self.crop_top
@@ -266,22 +309,69 @@ class EmailImages(Sensor, EasyResource):
                 crop_width = min(crop_width, img.width - crop_left)
                 crop_height = min(crop_height, img.height - crop_top)
                 cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
-
-                today_str = now.strftime('%Y%m%d')
-                daily_dir = os.path.join(self.base_dir, today_str)
-                os.makedirs(daily_dir, exist_ok=True)
-                filename = f"image_{now.strftime('%Y%m%d_%H%M%S')}_EST.jpg"
-                save_path = os.path.join(daily_dir, filename)
-                cropped_img.save(save_path, "JPEG")
-                self.last_capture_time = now
-                LOGGER.info(f"Saved image for {self.name}: {save_path}")
+                primary_filename = f"image_{timestamp}{PRIMARY_SUFFIX}"
+                primary_path = os.path.join(daily_dir, primary_filename)
+                cropped_img.save(primary_path, "JPEG")
+                LOGGER.info(f"Saved primary image for {self.name}: {primary_path}")
                 break
             except Exception as e:
-                LOGGER.warning(f"Capture failed for {self.name} (attempt {attempt + 1}): {str(e)}")
+                LOGGER.warning(f"Primary capture failed for {self.name} (attempt {attempt + 1}): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2)
                 else:
-                    LOGGER.error(f"All capture attempts failed for {self.name} at {now}")
+                    # Exit if primary camera capture is failing
+                    LOGGER.error(f"All primary capture attempts failed for {self.name} at {now}")
+                    return
+
+        # Capture secondary camera (langer_fill_view)
+        secondary_path = None
+        if self.secondary_camera:
+            for attempt in range(3):
+                try:
+                    LOGGER.info(f"Attempting secondary capture for {self.name} at {now} (attempt {attempt + 1})")
+                    image = await self.secondary_camera.get_image()
+                    img = Image.open(BytesIO(image.data))
+                    # Apply same cropping as primary for consistency
+                    cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
+                    secondary_filename = f"image_{timestamp}{SECONDARY_SUFFIX}"
+                    secondary_path = os.path.join(daily_dir, secondary_filename)
+                    cropped_img.save(secondary_path, "JPEG")
+                    LOGGER.info(f"Saved secondary image for {self.name}: {secondary_path}")
+                    break
+                except Exception as e:
+                    LOGGER.warning(f"Secondary capture failed for {self.name} (attempt {attempt + 1}): {str(e)}")
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+                    else:
+                        LOGGER.error(f"All secondary capture attempts failed for {self.name} at {now}")
+                        # Continue with primary only if secondary fails
+
+        # Stack images if feature flag is enabled and both captures succeeded
+        if self.stack_images and primary_path and secondary_path:
+            try:
+                primary_img = Image.open(primary_path)
+                secondary_img = Image.open(secondary_path)
+                if self.stack_orientation == "vertical":
+                    stacked_width = max(primary_img.width, secondary_img.width)
+                    stacked_height = primary_img.height + secondary_img.height
+                    stacked_img = Image.new("RGB", (stacked_width, stacked_height))
+                    stacked_img.paste(primary_img, (0, 0))
+                    stacked_img.paste(secondary_img, (0, primary_img.height))
+                else:  # horizontal
+                    stacked_width = primary_img.width + secondary_img.width
+                    stacked_height = max(primary_img.height, secondary_img.height)
+                    stacked_img = Image.new("RGB", (stacked_width, stacked_height))
+                    stacked_img.paste(primary_img, (0, 0))
+                    stacked_img.paste(secondary_img, (primary_img.width, 0))
+                stacked_filename = f"image_{timestamp}{STACKED_SUFFIX}"
+                stacked_path = os.path.join(daily_dir, stacked_filename)
+                stacked_img.save(stacked_path, "JPEG")
+                LOGGER.info(f"Saved stacked image for {self.name}: {stacked_path}")
+            except Exception as e:
+                LOGGER.error(f"Failed to stack images for {self.name}: {str(e)}")
+
+        self.last_capture_time = now
+        LOGGER.info(f"Completed capture for {self.name} at {now}")
 
     def annotate_image(self, image_path: str, font_path: Optional[str] = None, font_size: int = 20) -> Image.Image:
         """Annotate an image with its timestamp in the bottom-right corner."""
@@ -289,7 +379,7 @@ class EmailImages(Sensor, EasyResource):
         draw = ImageDraw.Draw(img)
 
         # Extract timestamp from filename
-        # e.g., image_20250304_090000_EST.jpg
+        # e.g., image_20250304_090000_primary_EST.jpg
         filename = os.path.basename(image_path)
         try:
             parts = filename.split('_')
@@ -320,14 +410,22 @@ class EmailImages(Sensor, EasyResource):
         draw.text((x, y), formatted_time, fill="white", font=font)
         return img
 
+    def _get_report_images(self, daily_dir: str, today_str: str) -> list[str]:
+        """Filter images for the report and GIF based on stack_images setting."""
+        all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
+        if self.stack_images:
+            return [f for f in all_images if f.endswith(STACKED_SUFFIX)]
+        return [f for f in all_images if f.endswith(PRIMARY_SUFFIX)]
+
     def create_daily_gif(self, daily_dir: str, frame_duration: int = 1000, font_path: Optional[str] = None, font_size: int = 20) -> str:
         """Create an animated GIF from daily images, saved as 'daily.gif'."""
+        today_str = os.path.basename(daily_dir)
         image_files = sorted(
-            [os.path.join(daily_dir, f) for f in os.listdir(daily_dir) if f.startswith("image_") and f.endswith("_EST.jpg")],
+            [os.path.join(daily_dir, f) for f in self._get_report_images(daily_dir, today_str)],
             key=lambda x: os.path.basename(x).split('_')[2]
         )
         if not image_files:
-            LOGGER.warning(f"No images found in {daily_dir} for GIF creation for {self.name}")
+            LOGGER.warning(f"No suitable images found in {daily_dir} for GIF creation for {self.name}")
             raise ValueError("No images available for GIF")
 
         frames = []
@@ -343,19 +441,20 @@ class EmailImages(Sensor, EasyResource):
     async def send_report(self, now):
         """Send a daily report with all captured images."""
         today_str = now.strftime('%Y%m%d')
-        daily_dir = os.path.join(self.base_dir, today_str)
+        # Use sensor-specific directory
+        daily_dir = os.path.join(self.sensor_dir, today_str)
         if not os.path.exists(daily_dir):
             LOGGER.info(f"No directory for {today_str} for {self.name}, skipping report")
             self.report = "no_images"
             return
 
-        all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{today_str}") and f.endswith("_EST.jpg")]
-        if not all_images:
-            LOGGER.info(f"No images for {today_str} for {self.name}, skipping report")
+        images_to_send = self._get_report_images(daily_dir, today_str)
+        if not images_to_send:
+            LOGGER.info(f"No suitable images for {today_str} for {self.name}, skipping report")
             self.report = "no_images"
             return
 
-        images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
+        images_to_send = sorted(images_to_send, key=lambda x: x.split('_')[1] + x.split('_')[2].split('_')[0])
         try:
             LOGGER.info(f"Sending report for {self.name} with {len(images_to_send)} images at {now}")
             await asyncio.get_running_loop().run_in_executor(
@@ -449,17 +548,18 @@ class EmailImages(Sensor, EasyResource):
             day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
                 timestamp = datetime.datetime.strptime(day, '%Y%m%d')
-                daily_dir = os.path.join(self.base_dir, day)
+                # Use sensor-specific directory
+                daily_dir = os.path.join(self.sensor_dir, day)
                 if not os.path.exists(daily_dir):
                     LOGGER.info(f"No directory for {day} for {self.name}")
                     return {"status": f"No images directory for {day}"}
 
-                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
-                if not all_images:
-                    LOGGER.info(f"No images for {day} for {self.name}")
+                images_to_send = self._get_report_images(daily_dir, day)
+                if not images_to_send:
+                    LOGGER.info(f"No suitable images for {day} for {self.name}")
                     return {"status": f"No images found for {day}"}
 
-                images_to_send = sorted(all_images, key=lambda x: x.split('_')[1] + x.split('_')[2].split('.')[0])
+                images_to_send = sorted(images_to_send, key=lambda x: x.split('_')[1] + x.split('_')[2].split('_')[0])
                 LOGGER.info(f"Manual send for {self.name} for {day} with {len(images_to_send)} images")
                 await asyncio.get_running_loop().run_in_executor(
                     None,
@@ -480,17 +580,18 @@ class EmailImages(Sensor, EasyResource):
             day = command.get("day", datetime.datetime.now().strftime('%Y%m%d'))
             try:
                 datetime.datetime.strptime(day, '%Y%m%d')
-                daily_dir = os.path.join(self.base_dir, day)
+                # Use sensor-specific directory
+                daily_dir = os.path.join(self.sensor_dir, day)  
                 if not os.path.exists(daily_dir):
                     LOGGER.info(f"No directory for {day} for {self.name}")
                     return {"status": f"No images directory for {day}"}
 
-                all_images = [f for f in os.listdir(daily_dir) if f.startswith(f"image_{day}") and f.endswith("_EST.jpg")]
-                if not all_images:
-                    LOGGER.info(f"No images for {day} for {self.name}")
+                images_to_send = self._get_report_images(daily_dir, day)
+                if not images_to_send:
+                    LOGGER.info(f"No suitable images for {day} for {self.name}")
                     return {"status": f"No images found for {day}"}
 
-                LOGGER.info(f"Creating GIF for {self.name} for {day} with {len(all_images)} images")
+                LOGGER.info(f"Creating GIF for {self.name} for {day} with {len(images_to_send)} images")
                 gif_path = await asyncio.get_running_loop().run_in_executor(
                     None,
                     functools.partial(self.create_daily_gif, daily_dir)
@@ -523,7 +624,9 @@ class EmailImages(Sensor, EasyResource):
             "capture_times_weekday": self.capture_times_weekday,
             "capture_times_weekend": self.capture_times_weekend,
             "state": self.state_file,
-            "lock": self.lock_file
+            "lock": self.lock_file,
+            "stack_images": self.stack_images,
+            "stack_orientation": self.stack_orientation
         }
 
 async def main():
