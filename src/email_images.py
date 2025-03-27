@@ -522,7 +522,8 @@ class EmailImages(Sensor, EasyResource):
             "next_send_time": str(next_send_time),
             "capture_times_weekday": self.capture_times_weekday,
             "capture_times_weekend": self.capture_times_weekend,
-            "state_file": self.state_file  # Added for debugging
+            "state": self.state_file,
+            "lock": self.lock_file
         }
 
 async def main():
