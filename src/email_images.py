@@ -290,7 +290,6 @@ class EmailImages(Sensor, EasyResource):
     async def capture_image(self, now):
         """Capture images from primary and secondary cameras with retry logic, optionally stacking them."""
         today_str = now.strftime('%Y%m%d')
-        # Use sensor-specific directory
         daily_dir = os.path.join(self.sensor_dir, today_str)
         os.makedirs(daily_dir, exist_ok=True)
         timestamp = now.strftime('%Y%m%d_%H%M%S')
@@ -302,16 +301,19 @@ class EmailImages(Sensor, EasyResource):
                 LOGGER.info(f"Attempting primary capture for {self.name} at {now} (attempt {attempt + 1})")
                 image = await self.primary_camera.get_image()
                 img = Image.open(BytesIO(image.data))
+                LOGGER.info(f"Captured primary image with raw dimensions: {img.width}x{img.height}")
                 crop_width = self.crop_width or img.width - self.crop_left
                 crop_height = self.crop_height or img.height - self.crop_top
                 crop_top = max(0, min(self.crop_top, img.height - 1))
                 crop_left = max(0, min(self.crop_left, img.width - 1))
                 crop_width = min(crop_width, img.width - crop_left)
                 crop_height = min(crop_height, img.height - crop_top)
-                cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
+                LOGGER.info(f"Applying crop to primary image: box=({crop_left}, {crop_top}, {crop_left + crop_width}, {crop_top + crop_height})")
+                primary_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
+                LOGGER.info(f"Primary image cropped to: {primary_img.width}x{primary_img.height}")
                 primary_filename = f"image_{timestamp}{PRIMARY_SUFFIX}"
                 primary_path = os.path.join(daily_dir, primary_filename)
-                cropped_img.save(primary_path, "JPEG")
+                primary_img.save(primary_path, "JPEG")
                 LOGGER.info(f"Saved primary image for {self.name}: {primary_path}")
                 break
             except Exception as e:
@@ -319,11 +321,10 @@ class EmailImages(Sensor, EasyResource):
                 if attempt < 2:
                     await asyncio.sleep(2)
                 else:
-                    # Exit if primary camera capture is failing
                     LOGGER.error(f"All primary capture attempts failed for {self.name} at {now}")
                     return
 
-        # Capture secondary camera (langer_fill_view)
+        # Capture secondary camera (langer_fill_view) if configured
         secondary_path = None
         if self.secondary_camera:
             for attempt in range(3):
@@ -331,11 +332,19 @@ class EmailImages(Sensor, EasyResource):
                     LOGGER.info(f"Attempting secondary capture for {self.name} at {now} (attempt {attempt + 1})")
                     image = await self.secondary_camera.get_image()
                     img = Image.open(BytesIO(image.data))
-                    # Apply same cropping as primary for consistency
-                    cropped_img = img.crop((crop_left, crop_top, crop_left + crop_width, crop_top + crop_height))
+                    LOGGER.info(f"Captured secondary image with raw dimensions: {img.width}x{img.height}")
+                    sec_crop_width = min(self.crop_width or img.width - self.crop_left, img.width - self.crop_left)
+                    sec_crop_height = min(self.crop_height or img.height - self.crop_top, img.height - self.crop_top)
+                    sec_crop_top = max(0, min(self.crop_top, img.height - 1))
+                    sec_crop_left = max(0, min(self.crop_left, img.width - 1))
+                    sec_crop_width = min(sec_crop_width, img.width - sec_crop_left)
+                    sec_crop_height = min(sec_crop_height, img.height - sec_crop_top)
+                    LOGGER.info(f"Applying crop to secondary image: box=({sec_crop_left}, {sec_crop_top}, {sec_crop_left + sec_crop_width}, {sec_crop_top + sec_crop_height})")
+                    secondary_img = img.crop((sec_crop_left, sec_crop_top, sec_crop_left + sec_crop_width, sec_crop_top + sec_crop_height))
+                    LOGGER.info(f"Secondary image cropped to: {secondary_img.width}x{secondary_img.height}")
                     secondary_filename = f"image_{timestamp}{SECONDARY_SUFFIX}"
                     secondary_path = os.path.join(daily_dir, secondary_filename)
-                    cropped_img.save(secondary_path, "JPEG")
+                    secondary_img.save(secondary_path, "JPEG")
                     LOGGER.info(f"Saved secondary image for {self.name}: {secondary_path}")
                     break
                 except Exception as e:
@@ -344,25 +353,58 @@ class EmailImages(Sensor, EasyResource):
                         await asyncio.sleep(2)
                     else:
                         LOGGER.error(f"All secondary capture attempts failed for {self.name} at {now}")
-                        # Continue with primary only if secondary fails
 
         # Stack images if feature flag is enabled and both captures succeeded
         if self.stack_images and primary_path and secondary_path:
             try:
                 primary_img = Image.open(primary_path)
                 secondary_img = Image.open(secondary_path)
+                LOGGER.info(f"Loaded images for stacking - primary: {primary_img.width}x{primary_img.height}, secondary: {secondary_img.width}x{secondary_img.height}")
+                
+                # Target size is primary's dimensions
+                target_width = primary_img.width
+                target_height = primary_img.height
+                secondary_aspect = secondary_img.width / secondary_img.height
+                LOGGER.info(f"Calculated secondary aspect ratio: {secondary_aspect:.2f}")
+
+                # Resize secondary proportionally to fit within primary's dimensions
                 if self.stack_orientation == "vertical":
-                    stacked_width = max(primary_img.width, secondary_img.width)
-                    stacked_height = primary_img.height + secondary_img.height
-                    stacked_img = Image.new("RGB", (stacked_width, stacked_height))
-                    stacked_img.paste(primary_img, (0, 0))
-                    stacked_img.paste(secondary_img, (0, primary_img.height))
+                    new_width = target_width
+                    new_height = int(new_width / secondary_aspect)
+                    if new_height > target_height:
+                        new_height = target_height
+                        new_width = int(new_height * secondary_aspect)
                 else:  # horizontal
-                    stacked_width = primary_img.width + secondary_img.width
-                    stacked_height = max(primary_img.height, secondary_img.height)
-                    stacked_img = Image.new("RGB", (stacked_width, stacked_height))
-                    stacked_img.paste(primary_img, (0, 0))
-                    stacked_img.paste(secondary_img, (primary_img.width, 0))
+                    new_height = target_height
+                    new_width = int(new_height * secondary_aspect)
+                    if new_width > target_width:
+                        new_width = target_width
+                        new_height = int(new_width / secondary_aspect)
+                LOGGER.info(f"Resizing secondary image to fit {self.stack_orientation} stack: {new_width}x{new_height}")
+
+                # Resize secondary image
+                secondary_resized = secondary_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                LOGGER.info(f"Secondary image resized to: {secondary_resized.width}x{secondary_resized.height}")
+
+                # Pad to match primary size
+                secondary_padded = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+                paste_x = (target_width - new_width) // 2
+                paste_y = (target_height - new_height) // 2
+                LOGGER.info(f"Padding secondary image to {target_width}x{target_height}, pasting at ({paste_x}, {paste_y})")
+                secondary_padded.paste(secondary_resized, (paste_x, paste_y))
+
+                # Stack the images
+                if self.stack_orientation == "vertical":
+                    stacked_width = target_width
+                    stacked_height = target_height * 2
+                else:  # horizontal
+                    stacked_width = target_width * 2
+                    stacked_height = target_height
+                LOGGER.info(f"Creating stacked image with dimensions: {stacked_width}x{stacked_height} ({self.stack_orientation})")
+                stacked_img = Image.new("RGB", (stacked_width, stacked_height))
+                stacked_img.paste(primary_img, (0, 0))
+                stacked_img.paste(secondary_padded, (0, target_height) if self.stack_orientation == "vertical" else (target_width, 0))
+
                 stacked_filename = f"image_{timestamp}{STACKED_SUFFIX}"
                 stacked_path = os.path.join(daily_dir, stacked_filename)
                 stacked_img.save(stacked_path, "JPEG")
